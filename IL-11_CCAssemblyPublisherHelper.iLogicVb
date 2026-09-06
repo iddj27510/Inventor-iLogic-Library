@@ -1,0 +1,131 @@
+'==============================================================================
+' NAME:         Content Centre Assembly Publisher Helper
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Helps prepare an assembly for Content Centre publishing.
+'   Validates iProperties, references, generates thumbnail.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be an Assembly document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027 ONLY (CC Assembly support)
+'
+' NOTES:
+'   Exclusive to Inventor 2027.
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim sFamilyName As String = ""
+Dim sCategory As String = "Assemblies"
+Dim bGenerateThumbnail As Boolean = True
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is AssemblyDocument) Then
+    MsgBox("Run this rule from an Assembly document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+
+' --- Validation checklist ---
+Dim sReport As String = "=== Content Centre Assembly Publisher Helper ===" & vbCrLf & vbCrLf
+Dim bAllOk As Boolean = True
+
+Dim oProps As PropertySet = oAsmDoc.PropertySets.Item("Design Tracking Properties")
+Dim sPartNumber As String = ""
+Dim sDescription As String = ""
+Dim sAuthor As String = ""
+
+Try
+    sPartNumber = oProps.Item("Part Number").Value.ToString().Trim()
+Catch
+End Try
+
+Try
+    sDescription = oProps.Item("Description").Value.ToString().Trim()
+Catch
+End Try
+
+Try
+    sAuthor = oProps.Item("Author").Value.ToString().Trim()
+Catch
+End Try
+
+If sPartNumber = "" Then
+    sReport &= "✗ Part Number is empty" & vbCrLf
+    bAllOk = False
+Else
+    sReport &= "✓ Part Number: " & sPartNumber & vbCrLf
+End If
+
+If sDescription = "" Then
+    sReport &= "✗ Description is empty" & vbCrLf
+    bAllOk = False
+Else
+    sReport &= "✓ Description: " & sDescription & vbCrLf
+End If
+
+If sAuthor = "" Then
+    sReport &= "✗ Author is empty" & vbCrLf
+    bAllOk = False
+Else
+    sReport &= "✓ Author: " & sAuthor & vbCrLf
+End If
+
+Dim oOccs As ComponentOccurrences = oAsmDoc.ComponentDefinition.Occurrences
+Dim nRefs As Integer = 0
+For Each oOcc As ComponentOccurrence In oOccs
+    Try
+        If oOcc.DefinitionDocumentType <> DocumentTypeEnum.kVirtualComponentDocumentObject Then
+            nRefs = nRefs + 1
+        End If
+    Catch
+    End Try
+Next
+
+If nRefs = 0 Then
+    sReport &= "✗ No components found in assembly" & vbCrLf
+    bAllOk = False
+Else
+    sReport &= "✓ Components found: " & nRefs & vbCrLf
+End If
+
+If sFamilyName = "" Then
+    sFamilyName = sPartNumber
+End If
+sReport &= "✓ Family Name: " & sFamilyName & vbCrLf
+
+sReport &= "✓ Category: " & sCategory & vbCrLf
+
+If bGenerateThumbnail Then
+    Try
+        Dim oView As View = oAsmDoc.ComponentDefinition.Views("Default")
+        Dim oBitmap As Object = oView.GetBitmap(400, 300)
+        sReport &= "✓ Thumbnail generated" & vbCrLf
+    Catch
+        sReport &= "✗ Could not generate thumbnail" & vbCrLf
+        bAllOk = False
+    End Try
+End If
+
+sReport &= vbCrLf & "Status: "
+If bAllOk Then
+    sReport &= "READY FOR CC PUBLISH" & vbCrLf
+    sReport &= vbCrLf & "Proceed to: Manage → Content Centre → Publish Assembly"
+Else
+    sReport &= "NOT READY — fix issues above" & vbCrLf
+End If
+
+MsgBox(sReport, vbInformation, "CC Assembly Publisher Helper")

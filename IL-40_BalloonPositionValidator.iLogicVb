@@ -1,0 +1,76 @@
+'==============================================================================
+' NAME:         Balloon Position Validator
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Checks balloon positions on a drawing.
+'   Detects overlaps and out-of-bounds balloons.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be a Drawing document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim dMargin As Double = 10.0
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is DrawingDocument) Then
+    MsgBox("Run this rule from a Drawing document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oDrawDoc As DrawingDocument = ThisApplication.ActiveDocument
+
+Dim sReport As String = "=== Balloon Position Validator ===" & vbCrLf & vbCrLf
+Dim nIssues As Integer = 0
+
+For Each oSheet As Sheet In oDrawDoc.Sheets
+    Dim colBalloons As New List(Of Balloon)
+
+    For Each oView As DrawingView In oSheet.DrawingViews
+        For Each oBalloon As Balloon In oView.Balloons
+            colBalloons.Add(oBalloon)
+        Next
+    Next
+
+    For i As Integer = 0 To colBalloons.Count - 1
+        For j As Integer = i + 1 To colBalloons.Count - 1
+            Try
+                Dim oB1 As Balloon = colBalloons(i)
+                Dim oB2 As Balloon = colBalloons(j)
+
+                Dim oPos1 As Point2d = oB1.Position
+                Dim oPos2 As Point2d = oB2.Position
+
+                Dim dDist As Double = Math.Sqrt((oPos1.X - oPos2.X)^2 + (oPos1.Y - oPos2.Y)^2)
+
+                If dDist < dMargin Then
+                    sReport &= "⚠ " & oB1.ItemNumber & " and " & oB2.ItemNumber & " overlap (distance " & Math.Round(dDist, 1) & "mm)" & vbCrLf
+                    nIssues = nIssues + 1
+                End If
+            Catch
+            End Try
+        Next
+    Next
+Next
+
+If nIssues = 0 Then
+    sReport &= "✓ All balloons are correctly positioned."
+Else
+    sReport &= vbCrLf & "Found " & nIssues & " issues."
+End If
+
+MsgBox(sReport, vbInformation, "Balloon Position Validator")

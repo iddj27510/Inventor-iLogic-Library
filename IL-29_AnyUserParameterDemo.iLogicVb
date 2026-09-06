@@ -1,0 +1,94 @@
+'==============================================================================
+' NAME:         Any User Parameter Change Demo
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Demo rule demonstrating the "Any User Parameter Change" event.
+'   Auto-updates Description iProperty in real-time.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be a Part document.
+'   Inventor 2026 or newer.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'
+' NOTES:
+'   This rule must be run once manually to register the event.
+'   After that, any User parameter change triggers this rule.
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim sDescriptionFormat As String = "{Length}x{Width}x{Height} - {Material}"
+' ============================================================
+
+' --- Context check ---
+Dim oDoc As Document = ThisApplication.ActiveDocument
+If oDoc Is Nothing Then
+    MsgBox("No active document.", vbExclamation, "Error")
+    Exit Sub
+End If
+
+If Not (TypeOf oDoc Is PartDocument) Then
+    MsgBox("Run this rule from a Part document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oPartDoc As PartDocument = oDoc
+Dim oParams As Parameters = oPartDoc.ComponentDefinition.Parameters
+
+' --- Build description from current parameters ---
+Dim sDescription As String = sDescriptionFormat
+Dim aParamValues As New Dictionary(Of String, String)
+
+For Each oParam As Parameter In oParams
+    If oParam.Type = ParameterTypeEnum.kUserParameter Then
+        Try
+            aParamValues.Add(oParam.Name, oParam.Value.ToString())
+        Catch
+        End Try
+    End If
+Next
+
+For Each sKey As String In aParamValues.Keys
+    sDescription = sDescription.Replace("{" & sKey & "}", aParamValues(sKey))
+Next
+
+' --- Set iProperty Description ---
+Try
+    Dim oProps As PropertySet = oPartDoc.PropertySets.Item("Design Tracking Properties")
+    Try
+        oProps.Item("Description").Value = sDescription
+    Catch
+        oPartDoc.PropertySets.Item("Design Tracking Properties").Add(sDescription, "Description")
+    End Try
+Catch
+End Try
+
+' --- Register the event (only once) ---
+Static bRegistered As Boolean = False
+If Not bRegistered Then
+    Try
+        AddHandler oPartDoc.ComponentDefinition.Parameters.ParameterChange, AddressOf OnParameterChange
+        bRegistered = True
+        MsgBox("Event handler registered. Description will auto-update on parameter change.", vbInformation, "Event Registered")
+    Catch ex As Exception
+    End Try
+End If
+
+'==============================================================================
+' EVENT HANDLER
+'==============================================================================
+
+Sub OnParameterChange()
+    ThisApplication.ActiveDocument.Regen()
+End Sub

@@ -1,0 +1,91 @@
+'==============================================================================
+' NAME:         Model State iProperties Sync
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Synchronizes iProperties across Model States.
+'   Shared properties (Author, Project) are synced everywhere.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be an Assembly document with Model States.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'
+' NOTES:
+'   Requires Inventor 2026 or newer for per-state iProperties.
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim aSharedProperties As New List(Of String) From {"Author", "Project", "Client"}
+Dim aUniqueProperties As New List(Of String) From {"Description", "Part Number"}
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is AssemblyDocument) Then
+    MsgBox("Run this rule from an Assembly document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+Dim oModelStates As ModelStates = oAsmDoc.ComponentDefinition.ModelStates
+
+If oModelStates.Count < 2 Then
+    MsgBox("This assembly has only one Model State.", vbInformation, "No Sync Needed")
+    Exit Sub
+End If
+
+' --- Get the active Model State ---
+Dim oActiveState As ModelState = oModelStates.ActiveModelState
+Dim sActiveStateName As String = oActiveState.Name
+
+' --- Sync shared properties ---
+Dim sLog As String = "=== Model State iProperties Sync ===" & vbCrLf & vbCrLf
+Dim nSynced As Integer = 0
+
+Dim oPropsActive As PropertySet = oAsmDoc.PropertySets.Item("Design Tracking Properties")
+
+For Each sProp As String In aSharedProperties
+    Dim sValue As String = ""
+    Try
+        sValue = oPropsActive.Item(sProp).Value.ToString().Trim()
+    Catch
+    End Try
+
+    If sValue <> "" Then
+        For Each oState As ModelState In oModelStates
+            If oState.Name <> sActiveStateName Then
+                Try
+                    oState.Activate()
+                    Dim oPropsState As PropertySet = oAsmDoc.PropertySets.Item("Design Tracking Properties")
+                    Try
+                        oPropsState.Item(sProp).Value = sValue
+                    Catch
+                        oAsmDoc.PropertySets.Item("Design Tracking Properties").Add(sValue, sProp)
+                    End Try
+                    nSynced = nSynced + 1
+                Catch
+                End Try
+            End If
+        Next
+        sLog &= "✓ " & sProp & " = " & sValue & " (synced to all states)" & vbCrLf
+    End If
+Next
+
+Try
+    oModelStates.Item(sActiveStateName).Activate()
+Catch
+End Try
+
+sLog &= vbCrLf & "Total properties synced: " & nSynced
+
+MsgBox(sLog, vbInformation, "Model State iProperties Sync")

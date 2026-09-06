@@ -1,0 +1,149 @@
+'==============================================================================
+' NAME:         File Rename & Repath (No Vault)
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Batch rename and repath Inventor files without Vault.
+'   Preview before rename, confirmation required.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be an Assembly document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'
+' NOTES:
+'   Does not work with files in Vault.
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim sPrefix As String = ""
+Dim sSuffix As String = ""
+Dim sFind As String = ""
+Dim sReplace As String = ""
+Dim bPreviewOnly As Boolean = False
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is AssemblyDocument) Then
+    MsgBox("Run this rule from an Assembly document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+
+' --- Collect all referenced files ---
+Dim colFiles As New List(Of String)
+Dim oOccs As ComponentOccurrences = oAsmDoc.ComponentDefinition.Occurrences
+CollectFiles(oOccs, colFiles)
+
+If colFiles.Count = 0 Then
+    MsgBox("No files found in assembly.", vbInformation, "No Files")
+    Exit Sub
+End If
+
+' --- Generate new names ---
+Dim sReport As String = "=== File Rename Preview ===" & vbCrLf & vbCrLf
+Dim colRenames As New List(Of Dictionary(Of String, String))
+
+For Each sFile As String In colFiles
+    Dim sFileName As String = System.IO.Path.GetFileName(sFile)
+    Dim sNewName As String = sFileName
+
+    If sPrefix <> "" Then
+        sNewName = sPrefix & sNewName
+    End If
+
+    If sSuffix <> "" Then
+        Dim sExt As String = System.IO.Path.GetExtension(sNewName)
+        Dim sName As String = System.IO.Path.GetFileNameWithoutExtension(sNewName)
+        sNewName = sName & sSuffix & sExt
+    End If
+
+    If sFind <> "" And sReplace <> "" Then
+        sNewName = sNewName.Replace(sFind, sReplace)
+    End If
+
+    If sNewName <> sFileName Then
+        Dim dict As New Dictionary(Of String, String)
+        dict.Add("Old", sFile)
+        dict.Add("New", System.IO.Path.GetDirectoryName(sFile) & "\" & sNewName)
+        colRenames.Add(dict)
+        sReport &= "  " & sFileName & " → " & sNewName & vbCrLf
+    End If
+Next
+
+If colRenames.Count = 0 Then
+    MsgBox("No files need renaming.", vbInformation, "No Changes")
+    Exit Sub
+End If
+
+sReport &= vbCrLf & "Total: " & colRenames.Count & " files to rename."
+
+If bPreviewOnly Then
+    MsgBox(sReport, vbInformation, "File Rename Preview")
+    Exit Sub
+End If
+
+sReport &= vbCrLf & vbCrLf & "Proceed with rename?"
+
+If MsgBox(sReport, vbYesNo + vbQuestion, "File Rename") <> vbYes Then
+    MsgBox("Rename cancelled.", vbInformation, "Cancelled")
+    Exit Sub
+End If
+
+' --- Perform rename ---
+Dim sLog As String = "=== File Rename Log ===" & vbCrLf & vbCrLf
+Dim nSuccess As Integer = 0
+
+For Each dict As Dictionary(Of String, String) In colRenames
+    Try
+        Dim sOld As String = dict("Old")
+        Dim sNew As String = dict("New")
+
+        System.IO.File.Move(sOld, sNew)
+        sLog &= "✓ " & System.IO.Path.GetFileName(sOld) & " → " & System.IO.Path.GetFileName(sNew) & vbCrLf
+        nSuccess = nSuccess + 1
+    Catch ex As Exception
+        sLog &= "✗ " & dict("Old") & ": " & ex.Message & vbCrLf
+    End Try
+Next
+
+sLog &= vbCrLf & "Successfully renamed: " & nSuccess & " files."
+
+MsgBox(sLog, vbInformation, "File Rename Complete")
+
+'==============================================================================
+' HELPER FUNCTIONS
+'==============================================================================
+
+Sub CollectFiles(oOccs As ComponentOccurrences, colFiles As List(Of String))
+    Dim oOcc As ComponentOccurrence
+    For Each oOcc In oOccs
+        Try
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kVirtualComponentDocumentObject Then
+                Continue For
+            End If
+
+            Dim sPath As String = oOcc.FullFileName
+            If sPath <> "" And Not colFiles.Contains(sPath) Then
+                colFiles.Add(sPath)
+            End If
+
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
+                Dim oSubAsm As AssemblyDocument = oOcc.Definition.Document
+                CollectFiles(oSubAsm.ComponentDefinition.Occurrences, colFiles)
+            End If
+        Catch
+        End Try
+    Next
+End Sub

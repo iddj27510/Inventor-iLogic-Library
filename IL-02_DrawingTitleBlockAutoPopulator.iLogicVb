@@ -1,0 +1,108 @@
+'==============================================================================
+' NAME:         Drawing Title Block Auto-Populator
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Automatically populates the title block on the active drawing using
+'   iProperties from the first referenced model.
+'
+' PARAMETERS:
+'   None — attribute mapping is configured in the Dictionary below.
+'
+' ASSUMPTIONS:
+'   Active document must be a Drawing document.
+'   The first referenced model must exist.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'
+' NOTES:
+'   Attribute names are template-specific. Adjust the mapping below.
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim oTitleBlockMap As New Dictionary(Of String, String)
+oTitleBlockMap.Add("Part Number", "Part Number")
+oTitleBlockMap.Add("Title", "Description")
+oTitleBlockMap.Add("Material", "Material")
+oTitleBlockMap.Add("Drawn By", "Author")
+oTitleBlockMap.Add("Revision", "Revision Number")
+oTitleBlockMap.Add("Weight", "Weight")
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is DrawingDocument) Then
+    MsgBox("Run this rule from a Drawing document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oDrawDoc As DrawingDocument = ThisApplication.ActiveDocument
+
+' --- Get referenced model ---
+If oDrawDoc.ReferencedDocuments.Count = 0 Then
+    MsgBox("This drawing has no referenced documents.", vbExclamation, "No Model")
+    Exit Sub
+End If
+
+Dim oModelDoc As Document = oDrawDoc.ReferencedDocuments.Item(1)
+Dim oProps As PropertySet = oModelDoc.PropertySets.Item("Design Tracking Properties")
+
+' --- Populate title block on each sheet ---
+Dim oSheet As Sheet
+For Each oSheet In oDrawDoc.Sheets
+    PopulateTitleBlock(oSheet, oProps, oModelDoc)
+Next
+
+MsgBox("Title block populated successfully.", vbInformation, "Done")
+
+'==============================================================================
+' HELPER FUNCTIONS
+'==============================================================================
+
+Sub PopulateTitleBlock(oSheet As Sheet, oProps As PropertySet, oModel As Document)
+    Try
+        Dim oTB As TitleBlock = oSheet.TitleBlock
+        If oTB Is Nothing Then Return
+
+        Dim oAttrName As String
+        For Each oAttrName In oTitleBlockMap.Keys
+            Dim sPropName As String = oTitleBlockMap.Item(oAttrName)
+            Dim sValue As String = GetPropertyValue(oProps, sPropName, oModel)
+
+            If sValue <> "" Then
+                Try
+                    oTB.SetAttributeValue(oAttrName, sValue)
+                Catch
+                End Try
+            End If
+        Next
+
+        Dim oView As DrawingView = Nothing
+        Try
+            oView = oSheet.DrawingViews.Item(1)
+            If oView IsNot Nothing Then
+                oTB.SetAttributeValue("Scale", oView.ScaleString)
+            End If
+        Catch
+        End Try
+
+        oTB.SetAttributeValue("Date", DateTime.Now.ToString("dd.MM.yyyy"))
+
+    Catch ex As Exception
+    End Try
+End Sub
+
+Function GetPropertyValue(oProps As PropertySet, sPropName As String, oModel As Document) As String
+    Try
+        Dim oProp As Inventor.Property = oProps.Item(sPropName)
+        Return oProp.Value.ToString()
+    Catch
+        Return ""
+    End Try
+End Function

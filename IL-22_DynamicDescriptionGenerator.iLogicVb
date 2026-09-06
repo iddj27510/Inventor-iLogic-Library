@@ -1,0 +1,82 @@
+'==============================================================================
+' NAME:         Dynamic Description Generator
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Automatically generates Description from parameters.
+'   Trigger: Any User Parameter Change (Inventor 2026/2027)
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be a Part document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'
+' NOTES:
+'   Requires Inventor 2026 or newer for "Any User Parameter Change" event.
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim sDescriptionFormat As String = "{Material} {Length}x{Width}x{Thickness}"
+Dim aParamMapping As New Dictionary(Of String, String)
+aParamMapping.Add("Material", "Material")
+aParamMapping.Add("Length", "Length")
+aParamMapping.Add("Width", "Width")
+aParamMapping.Add("Thickness", "Thickness")
+' ============================================================
+
+' --- Context check ---
+Dim oDoc As Document = ThisApplication.ActiveDocument
+If oDoc Is Nothing Then
+    MsgBox("No active document.", vbExclamation, "Error")
+    Exit Sub
+End If
+
+If Not (TypeOf oDoc Is PartDocument) Then
+    MsgBox("Run this rule from a Part document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oPartDoc As PartDocument = oDoc
+Dim oParams As Parameters = oPartDoc.ComponentDefinition.Parameters
+
+' --- Build description from parameters ---
+Dim sDescription As String = sDescriptionFormat
+
+For Each sKey As String In aParamMapping.Keys
+    Dim sParamName As String = aParamMapping(sKey)
+    Dim sValue As String = ""
+
+    Try
+        Dim oParam As Parameter = oParams.Item(sParamName)
+        If oParam IsNot Nothing Then
+            sValue = oParam.Value.ToString()
+        End If
+    Catch
+    End Try
+
+    sDescription = sDescription.Replace("{" & sKey & "}", sValue)
+Next
+
+' --- Set iProperty Description ---
+Try
+    Dim oProps As PropertySet = oPartDoc.PropertySets.Item("Design Tracking Properties")
+    Try
+        oProps.Item("Description").Value = sDescription
+    Catch
+        oPartDoc.PropertySets.Item("Design Tracking Properties").Add(sDescription, "Description")
+    End Try
+
+    oPartDoc.Save()
+
+Catch ex As Exception
+End Try

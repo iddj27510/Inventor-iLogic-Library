@@ -1,0 +1,68 @@
+'==============================================================================
+' NAME:         Weldment BOM Structure Fixer
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Checks and fixes BOM structure type for weldment assemblies.
+'   Detects inconsistencies and suggests corrections.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be an Assembly document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim bFixAutomatically As Boolean = False
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is AssemblyDocument) Then
+    MsgBox("Run this rule from an Assembly document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+Dim oBOM As BOM = oAsmDoc.ComponentDefinition.BOM
+Dim oBOMView As BOMView = oBOM.BOMViews.Item("Structured")
+
+Dim sReport As String = "=== Weldment BOM Structure Fixer ===" & vbCrLf & vbCrLf
+Dim nFixed As Integer = 0
+
+For Each oRow As BOMRow In oBOMView.BOMRows
+    Try
+        Dim oComp As ComponentOccurrence = oRow.ComponentOccurrences(1)
+        If oComp IsNot Nothing Then
+            Dim sStructure As String = oRow.Structure.ToString()
+            Dim sType As String = oComp.DefinitionDocumentType.ToString()
+
+            If sType = "kAssemblyDocumentObject" And sStructure <> "Purchased" Then
+                sReport &= "⚠ " & oComp.Name & ": Structure = " & sStructure & " (should be Purchased for weldments)" & vbCrLf
+
+                If bFixAutomatically Then
+                    oRow.Structure = BOMStructureEnum.kPurchasedBOMStructure
+                    nFixed = nFixed + 1
+                End If
+            End If
+        End If
+    Catch
+    End Try
+Next
+
+If nFixed > 0 Then
+    sReport &= vbCrLf & "Fixed: " & nFixed & " rows."
+ElseIf Not bFixAutomatically Then
+    sReport &= vbCrLf & "No issues found (or run with auto-fix enabled)."
+End If
+
+MsgBox(sReport, vbInformation, "Weldment BOM Fixer")

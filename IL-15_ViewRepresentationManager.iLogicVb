@@ -1,0 +1,145 @@
+'==============================================================================
+' NAME:         View Representation Manager
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Creates a standard set of View Representations for an assembly.
+'   Default, Presentation, Maintenance.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be an Assembly document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim bCreateDefault As Boolean = True
+Dim bCreatePresentation As Boolean = True
+Dim bCreateMaintenance As Boolean = True
+Dim bSkipExisting As Boolean = True
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is AssemblyDocument) Then
+    MsgBox("Run this rule from an Assembly document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+Dim oRepMgr As RepresentationsManager = oAsmDoc.ComponentDefinition.RepresentationsManager
+Dim oViewReps As ViewRepresentations = oRepMgr.ViewRepresentations
+
+Dim sLog As String = ""
+
+' --- 1. Default ---
+If bCreateDefault Then
+    Dim sName As String = "Default"
+    Dim bExists As Boolean = False
+    For Each oViewRep As ViewRepresentation In oViewReps
+        If oViewRep.Name = sName Then
+            bExists = True
+            Exit For
+        End If
+    Next
+
+    If Not bExists Or Not bSkipExisting Then
+        Try
+            Dim oViewRep As ViewRepresentation = oViewReps.Add(sName)
+            oViewRep.Activate()
+            sLog &= "✓ Created: " & sName & vbCrLf
+        Catch ex As Exception
+            sLog &= "✗ Failed: " & sName & " - " & ex.Message & vbCrLf
+        End Try
+    Else
+        sLog &= "→ Skipped: " & sName & " (already exists)" & vbCrLf
+    End If
+End If
+
+' --- 2. Presentation ---
+If bCreatePresentation Then
+    Dim sName As String = "Presentation"
+    Dim bExists As Boolean = False
+    For Each oViewRep As ViewRepresentation In oViewReps
+        If oViewRep.Name = sName Then
+            bExists = True
+            Exit For
+        End If
+    Next
+
+    If Not bExists Or Not bSkipExisting Then
+        Try
+            Dim oViewRep As ViewRepresentation = oViewReps.Add(sName)
+            oViewRep.Activate()
+
+            Dim oOccs As ComponentOccurrences = oAsmDoc.ComponentDefinition.Occurrences
+            For Each oOcc As ComponentOccurrence In oOccs
+                Try
+                    If oOcc.DefinitionDocumentType = DocumentTypeEnum.kPartDocumentObject Then
+                        Dim oPart As PartDocument = oOcc.Definition.Document
+                        Try
+                            Dim oCC As Inventor.Property = oPart.PropertySets.Item("Design Tracking Properties").Item("Content Center Member")
+                            If oCC IsNot Nothing Then
+                                oOcc.Visible = False
+                            End If
+                        Catch
+                        End Try
+                    End If
+                Catch
+                End Try
+            Next
+
+            sLog &= "✓ Created: " & sName & vbCrLf
+        Catch ex As Exception
+            sLog &= "✗ Failed: " & sName & " - " & ex.Message & vbCrLf
+        End Try
+    Else
+        sLog &= "→ Skipped: " & sName & " (already exists)" & vbCrLf
+    End If
+End If
+
+' --- 3. Maintenance ---
+If bCreateMaintenance Then
+    Dim sName As String = "Maintenance"
+    Dim bExists As Boolean = False
+    For Each oViewRep As ViewRepresentation In oViewReps
+        If oViewRep.Name = sName Then
+            bExists = True
+            Exit For
+        End If
+    Next
+
+    If Not bExists Or Not bSkipExisting Then
+        Try
+            Dim oViewRep As ViewRepresentation = oViewReps.Add(sName)
+            oViewRep.Activate()
+
+            Dim oOccs As ComponentOccurrences = oAsmDoc.ComponentDefinition.Occurrences
+            For Each oOcc As ComponentOccurrence In oOccs
+                Try
+                    If oOcc.DefinitionDocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
+                        oOcc.Transparent = True
+                    End If
+                Catch
+                End Try
+            Next
+
+            sLog &= "✓ Created: " & sName & vbCrLf
+        Catch ex As Exception
+            sLog &= "✗ Failed: " & sName & " - " & ex.Message & vbCrLf
+        End Try
+    Else
+        sLog &= "→ Skipped: " & sName & " (already exists)" & vbCrLf
+    End If
+End If
+
+MsgBox("=== View Representation Manager ===" & vbCrLf & vbCrLf & sLog, vbInformation, "View Rep Manager")

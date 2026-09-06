@@ -1,0 +1,150 @@
+'==============================================================================
+' NAME:         Level of Detail Auto-Creator
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Automatically creates 3 standard Level of Detail representations:
+'   - All Components (default)
+'   - Structure Only (purchased parts suppressed)
+'   - Simplified (sub-assemblies as single bodies)
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be an Assembly document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'
+' NOTES:
+'   Does not modify existing LODs — creates new ones if they don't exist.
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim bCreateAllComponents As Boolean = True
+Dim bCreateStructureOnly As Boolean = True
+Dim bCreateSimplified As Boolean = True
+Dim bSkipExisting As Boolean = True
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is AssemblyDocument) Then
+    MsgBox("Run this rule from an Assembly document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+Dim oRepMgr As RepresentationsManager = oAsmDoc.ComponentDefinition.RepresentationsManager
+Dim oLODs As LevelOfDetailRepresentations = oRepMgr.LevelOfDetailRepresentations
+
+Dim sLog As String = ""
+
+' --- 1. All Components ---
+If bCreateAllComponents Then
+    Dim sName As String = "All Components"
+    Dim bExists As Boolean = False
+    For Each oLOD As LevelOfDetailRepresentation In oLODs
+        If oLOD.Name = sName Then
+            bExists = True
+            Exit For
+        End If
+    Next
+
+    If Not bExists Or Not bSkipExisting Then
+        Try
+            Dim oLOD As LevelOfDetailRepresentation = oLODs.Add(sName)
+            oLOD.Activate()
+            sLog &= "✓ Created: " & sName & vbCrLf
+        Catch ex As Exception
+            sLog &= "✗ Failed to create " & sName & ": " & ex.Message & vbCrLf
+        End Try
+    Else
+        sLog &= "→ Skipped: " & sName & " (already exists)" & vbCrLf
+    End If
+End If
+
+' --- 2. Structure Only ---
+If bCreateStructureOnly Then
+    Dim sName As String = "Structure Only"
+    Dim bExists As Boolean = False
+    For Each oLOD As LevelOfDetailRepresentation In oLODs
+        If oLOD.Name = sName Then
+            bExists = True
+            Exit For
+        End If
+    Next
+
+    If Not bExists Or Not bSkipExisting Then
+        Try
+            Dim oLOD As LevelOfDetailRepresentation = oLODs.Add(sName)
+            oLOD.Activate()
+
+            Dim oOccs As ComponentOccurrences = oAsmDoc.ComponentDefinition.Occurrences
+            For Each oOcc As ComponentOccurrence In oOccs
+                Try
+                    If oOcc.DefinitionDocumentType = DocumentTypeEnum.kPartDocumentObject Then
+                        Dim oPart As PartDocument = oOcc.Definition.Document
+                        Try
+                            Dim oCC As Inventor.Property = oPart.PropertySets.Item("Design Tracking Properties").Item("Content Center Member")
+                            If oCC IsNot Nothing Then
+                                oOcc.Suppressed = True
+                            End If
+                        Catch
+                        End Try
+                    End If
+                Catch
+                End Try
+            Next
+
+            sLog &= "✓ Created: " & sName & vbCrLf
+        Catch ex As Exception
+            sLog &= "✗ Failed to create " & sName & ": " & ex.Message & vbCrLf
+        End Try
+    Else
+        sLog &= "→ Skipped: " & sName & " (already exists)" & vbCrLf
+    End If
+End If
+
+' --- 3. Simplified ---
+If bCreateSimplified Then
+    Dim sName As String = "Simplified"
+    Dim bExists As Boolean = False
+    For Each oLOD As LevelOfDetailRepresentation In oLODs
+        If oLOD.Name = sName Then
+            bExists = True
+            Exit For
+        End If
+    Next
+
+    If Not bExists Or Not bSkipExisting Then
+        Try
+            Dim oLOD As LevelOfDetailRepresentation = oLODs.Add(sName)
+            oLOD.Activate()
+
+            Dim oOccs As ComponentOccurrences = oAsmDoc.ComponentDefinition.Occurrences
+            For Each oOcc As ComponentOccurrence In oOccs
+                Try
+                    If oOcc.DefinitionDocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
+                        oOcc.Suppressed = True
+                    End If
+                Catch
+                End Try
+            Next
+
+            sLog &= "✓ Created: " & sName & vbCrLf
+        Catch ex As Exception
+            sLog &= "✗ Failed to create " & sName & ": " & ex.Message & vbCrLf
+        End Try
+    Else
+        sLog &= "→ Skipped: " & sName & " (already exists)" & vbCrLf
+    End If
+End If
+
+MsgBox("=== Level of Detail Auto-Creator ===" & vbCrLf & vbCrLf & sLog, vbInformation, "LOD Auto-Creator")

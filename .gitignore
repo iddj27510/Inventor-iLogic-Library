@@ -1,0 +1,7 @@
+*.iLogicVb
+!*.iLogicVb
+*.txt
+!*_test.txt
+*.log
+Thumbs.db
+.DS_Store

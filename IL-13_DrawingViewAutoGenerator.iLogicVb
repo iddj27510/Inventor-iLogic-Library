@@ -1,0 +1,120 @@
+'==============================================================================
+' NAME:         Drawing View Auto-Generator for Sheet Metal
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Automatically creates a drawing with standard views for a sheet metal part.
+'   Adds flat pattern view and bend table.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be a Part document (sheet metal).
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'
+' NOTES:
+'   Uses first-angle projection (ISO standard).
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim sTemplatePath As String = ""
+Dim dViewScale As Double = 1.0
+Dim bAddFlatPattern As Boolean = True
+Dim bAddBendTable As Boolean = True
+Dim sProjection As String = "FirstAngle"   ' "FirstAngle" or "ThirdAngle"
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is PartDocument) Then
+    MsgBox("Run this rule from a Part document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oPartDoc As PartDocument = ThisApplication.ActiveDocument
+
+' --- Check if sheet metal ---
+If Not (TypeOf oPartDoc.ComponentDefinition Is SheetMetalComponentDefinition) Then
+    MsgBox("This is not a sheet metal part.", vbExclamation, "Not Sheet Metal")
+    Exit Sub
+End If
+
+' --- Create drawing ---
+Dim oDrawDoc As DrawingDocument
+
+If sTemplatePath <> "" And System.IO.File.Exists(sTemplatePath) Then
+    oDrawDoc = ThisApplication.Documents.Add(DocumentTypeEnum.kDrawingDocumentObject, sTemplatePath, True)
+Else
+    oDrawDoc = ThisApplication.Documents.Add(DocumentTypeEnum.kDrawingDocumentObject)
+End If
+
+' --- Get first sheet ---
+Dim oSheet As Sheet = oDrawDoc.Sheets(1)
+
+' --- Add base view ---
+Dim oView As DrawingView
+Dim oPoint As Point2d
+oPoint = ThisApplication.TransientObjects.CreatePoint2d(20, 20)
+
+Dim oViewOrientation As ViewOrientationType
+If sProjection = "FirstAngle" Then
+    oViewOrientation = ViewOrientationTypeEnum.kFrontViewOrientation
+Else
+    oViewOrientation = ViewOrientationTypeEnum.kFrontViewOrientation
+End If
+
+oView = oSheet.DrawingViews.AddBaseView(oPartDoc, oPoint, dViewScale, oViewOrientation, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
+
+' --- Add projected views ---
+If sProjection = "FirstAngle" Then
+    Dim oTopPoint As Point2d = ThisApplication.TransientObjects.CreatePoint2d(20, 20 - 100)
+    Dim oRightPoint As Point2d = ThisApplication.TransientObjects.CreatePoint2d(20 - 100, 20)
+
+    oSheet.DrawingViews.AddProjectedView(oView, oTopPoint, ViewOrientationTypeEnum.kTopViewOrientation, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
+    oSheet.DrawingViews.AddProjectedView(oView, oRightPoint, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
+Else
+    Dim oTopPoint As Point2d = ThisApplication.TransientObjects.CreatePoint2d(20, 20 + 100)
+    Dim oRightPoint As Point2d = ThisApplication.TransientObjects.CreatePoint2d(20 + 100, 20)
+
+    oSheet.DrawingViews.AddProjectedView(oView, oTopPoint, ViewOrientationTypeEnum.kTopViewOrientation, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
+    oSheet.DrawingViews.AddProjectedView(oView, oRightPoint, ViewOrientationTypeEnum.kRightViewOrientation, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
+End If
+
+' --- Add flat pattern view ---
+If bAddFlatPattern Then
+    Try
+        Dim oSMDef As SheetMetalComponentDefinition = oPartDoc.ComponentDefinition
+        If oSMDef.HasFlatPattern Then
+            Dim oFlatPoint As Point2d = ThisApplication.TransientObjects.CreatePoint2d(20, 20 + 200)
+            oSheet.DrawingViews.AddFlatPatternView(oSMDef, oFlatPoint, dViewScale, DrawingViewStyleEnum.kHiddenLineDrawingViewStyle)
+        End If
+    Catch
+    End Try
+End If
+
+' --- Add bend table ---
+If bAddBendTable Then
+    Try
+        For Each oDV As DrawingView In oSheet.DrawingViews
+            If oDV.ViewType = DrawingViewTypeEnum.kFlatPatternDrawingView Then
+                oSheet.BendTables.Add(oDV)
+                Exit For
+            End If
+        Next
+    Catch
+    End Try
+End If
+
+' --- Save drawing ---
+Dim sDrawPath As String = System.IO.Path.GetDirectoryName(oPartDoc.FullFileName) & "\" & System.IO.Path.GetFileNameWithoutExtension(oPartDoc.FullFileName) & ".idw"
+oDrawDoc.SaveAs(sDrawPath, False)
+
+MsgBox("Drawing created: " & sDrawPath, vbInformation, "Drawing View Auto-Generator")

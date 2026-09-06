@@ -1,0 +1,102 @@
+'==============================================================================
+' NAME:         Multi-Body to Separate Parts Automator
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Creates separate part files from each solid body in a multi-body part.
+'   Optionally creates an assembly containing all components.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be a Part document with multiple bodies.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'
+' NOTES:
+'   Uses the Make Components functionality.
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim sOutputFolder As String = ""
+Dim bCreateAssembly As Boolean = True
+Dim bCopyIProperties As Boolean = True
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is PartDocument) Then
+    MsgBox("Run this rule from a Part document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oPartDoc As PartDocument = ThisApplication.ActiveDocument
+Dim oPartDef As PartComponentDefinition = oPartDoc.ComponentDefinition
+
+' --- Check if multi-body ---
+Dim nBodies As Integer = 0
+Try
+    nBodies = oPartDef.SurfaceBodies.Count
+Catch
+End Try
+
+If nBodies < 2 Then
+    MsgBox("This part has only " & nBodies & " body(ies). Need at least 2.", vbInformation, "Not Multi-Body")
+    Exit Sub
+End If
+
+' --- Set output folder ---
+If sOutputFolder = "" Then
+    sOutputFolder = System.IO.Path.GetDirectoryName(oPartDoc.FullFileName) & "\DerivedParts"
+End If
+
+If Not System.IO.Directory.Exists(sOutputFolder) Then
+    System.IO.Directory.CreateDirectory(sOutputFolder)
+End If
+
+' --- Show confirmation ---
+Dim sMsg As String = "=== Multi-Body to Separate Parts ===" & vbCrLf & vbCrLf
+sMsg &= "Bodies found: " & nBodies & vbCrLf
+sMsg &= "Output folder: " & sOutputFolder & vbCrLf
+sMsg &= "Create assembly: " & bCreateAssembly & vbCrLf
+sMsg &= vbCrLf & "Proceed?"
+
+If MsgBox(sMsg, vbYesNo + vbQuestion, "Multi-Body Automator") <> vbYes Then
+    Exit Sub
+End If
+
+' --- Create separate parts ---
+Dim sLog As String = "=== Multi-Body to Separate Parts Log ===" & vbCrLf & vbCrLf
+Dim nCreated As Integer = 0
+
+Try
+    Dim oMakeComp As MakeComponents
+    oMakeComp = oPartDef.MakeComponents
+
+    Dim oOptions As NameValueMap = ThisApplication.TransientObjects.CreateNameValueMap()
+    oOptions.Add("OutputPath", sOutputFolder)
+    oOptions.Add("CreateAssembly", bCreateAssembly)
+    oOptions.Add("CopyIProperties", bCopyIProperties)
+
+    oMakeComp.CreateComponents(oOptions)
+
+    sLog &= "✓ Created " & nBodies & " separate parts." & vbCrLf
+
+    If bCreateAssembly Then
+        sLog &= "✓ Created assembly." & vbCrLf
+    End If
+
+    sLog &= vbCrLf & "Output: " & sOutputFolder
+
+Catch ex As Exception
+    sLog &= "✗ Error: " & ex.Message
+End Try
+
+MsgBox(sLog, vbInformation, "Multi-Body Automator Complete")

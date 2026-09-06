@@ -1,0 +1,194 @@
+'==============================================================================
+' NAME:         Flat Pattern DXF Batch Exporter
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Recursively scans the active assembly and exports a DXF flat pattern
+'   for every sheet metal part found. Errors on individual parts are
+'   logged and do not stop the batch.
+'
+' PARAMETERS:
+'   Set sOutputFolder below. Leave empty to use the assembly folder.
+'
+' ASSUMPTIONS:
+'   Active document must be an Assembly document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'
+' NOTES:
+'   Parts without a flat pattern are skipped and logged, not exported.
+'   Non-sheet-metal parts are skipped silently.
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit only here
+' ============================================================
+Dim sOutputFolder As String = ""
+' Leave empty to output next to the assembly file.
+' Or specify a path: "C:\DXF_Output\"
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is AssemblyDocument) Then
+    MsgBox("Run this rule from an Assembly document.", vbExclamation, "Wrong Document Type")
+    GoTo Done
+End If
+
+Dim oAssembly As AssemblyDocument = ThisApplication.ActiveDocument
+
+' --- Resolve output folder ---
+Dim sFolder As String
+If sOutputFolder = "" Then
+    sFolder = System.IO.Path.GetDirectoryName(oAssembly.FullFileName) & "\"
+Else
+    sFolder = sOutputFolder
+    If Not System.IO.Directory.Exists(sFolder) Then
+        System.IO.Directory.CreateDirectory(sFolder)
+    End If
+End If
+
+' --- Result lists ---
+Dim exported As New System.Collections.Generic.List(Of String)
+Dim skippedNotSheetMetal As New System.Collections.Generic.List(Of String)
+Dim skippedNoFlatPattern As New System.Collections.Generic.List(Of String)
+Dim errors As New System.Collections.Generic.List(Of String)
+
+' --- Run ---
+ScanOccurrences(oAssembly.ComponentDefinition.Occurrences, _
+                sFolder, exported, skippedNotSheetMetal, _
+                skippedNoFlatPattern, errors)
+
+' --- Report ---
+Dim report As String = "=== Flat Pattern DXF Export ===" & vbCrLf & vbCrLf
+
+report &= "Exported (" & exported.Count & "):" & vbCrLf
+For Each s As String In exported
+    report &= "  + " & s & vbCrLf
+Next
+
+If skippedNoFlatPattern.Count > 0 Then
+    report &= vbCrLf & "No flat pattern — skipped (" & skippedNoFlatPattern.Count & "):" & vbCrLf
+    For Each s As String In skippedNoFlatPattern
+        report &= "  - " & s & vbCrLf
+    Next
+End If
+
+If skippedNotSheetMetal.Count > 0 Then
+    report &= vbCrLf & "Not sheet metal — skipped (" & skippedNotSheetMetal.Count & "):" & vbCrLf
+    For Each s As String In skippedNotSheetMetal
+        report &= "  - " & s & vbCrLf
+    Next
+End If
+
+If errors.Count > 0 Then
+    report &= vbCrLf & "ERRORS (" & errors.Count & "):" & vbCrLf
+    For Each s As String In errors
+        report &= "  ! " & s & vbCrLf
+    Next
+End If
+
+report &= vbCrLf & "Output folder: " & sFolder
+
+MsgBox(report, vbInformation, "Export complete")
+
+Done:
+
+'==============================================================================
+' HELPER FUNCTIONS
+'==============================================================================
+
+Sub ScanOccurrences(oOccs As ComponentOccurrences, _
+                    sFolder As String, _
+                    exported As System.Collections.Generic.List(Of String), _
+                    skippedNotSheetMetal As System.Collections.Generic.List(Of String), _
+                    skippedNoFlatPattern As System.Collections.Generic.List(Of String), _
+                    errors As System.Collections.Generic.List(Of String))
+
+    Dim oOcc As ComponentOccurrence
+    For Each oOcc In oOccs
+        Try
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kVirtualComponentDocumentObject Then
+                Continue For
+            End If
+
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
+                Dim oSubAsm As AssemblyDocument = oOcc.Definition.Document
+                ScanOccurrences(oSubAsm.ComponentDefinition.Occurrences, _
+                                sFolder, exported, skippedNotSheetMetal, _
+                                skippedNoFlatPattern, errors)
+                Continue For
+            End If
+
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kPartDocumentObject Then
+                Dim oPart As PartDocument = oOcc.Definition.Document
+                ExportFlatPattern(oPart, sFolder, exported, skippedNotSheetMetal, skippedNoFlatPattern, errors)
+            End If
+
+        Catch ex As Exception
+            errors.Add(oOcc.Name & " — " & ex.Message)
+        End Try
+    Next
+End Sub
+
+Sub ExportFlatPattern(oPart As PartDocument, _
+                      sFolder As String, _
+                      exported As System.Collections.Generic.List(Of String), _
+                      skippedNotSheetMetal As System.Collections.Generic.List(Of String), _
+                      skippedNoFlatPattern As System.Collections.Generic.List(Of String), _
+                      errors As System.Collections.Generic.List(Of String))
+    Try
+        If Not (TypeOf oPart.ComponentDefinition Is SheetMetalComponentDefinition) Then
+            skippedNotSheetMetal.Add(oPart.DisplayName)
+            Return
+        End If
+
+        Dim oSMDef As SheetMetalComponentDefinition = oPart.ComponentDefinition
+
+        If Not oSMDef.HasFlatPattern Then
+            skippedNoFlatPattern.Add(oPart.DisplayName & " — flat pattern missing")
+            Return
+        End If
+
+        Dim sPartNumber As String = ""
+        Dim sRevision As String = ""
+
+        Try
+            Dim oPropSet As PropertySet = oPart.PropertySets.Item("Design Tracking Properties")
+            sPartNumber = oPropSet.Item("Part Number").Value.ToString().Trim()
+        Catch
+            sPartNumber = System.IO.Path.GetFileNameWithoutExtension(oPart.FullFileName)
+        End Try
+
+        Try
+            Dim oPropSet2 As PropertySet = oPart.PropertySets.Item("Design Tracking Properties")
+            sRevision = oPropSet2.Item("Revision Number").Value.ToString().Trim()
+        Catch
+            sRevision = "A"
+        End Try
+
+        For Each c As Char In System.IO.Path.GetInvalidFileNameChars()
+            sPartNumber = sPartNumber.Replace(c.ToString(), "_")
+            sRevision = sRevision.Replace(c.ToString(), "_")
+        Next
+
+        If sPartNumber = "" Then
+            sPartNumber = System.IO.Path.GetFileNameWithoutExtension(oPart.FullFileName)
+        End If
+
+        Dim sFileName As String = sPartNumber & "_FP_" & sRevision & ".dxf"
+        Dim sFilePath As String = sFolder & sFileName
+
+        Dim oDataIO As DataIO = oPart.ComponentDefinition.DataIO
+        oDataIO.WriteDataToFile("FlatPattern DXF", sFilePath)
+
+        exported.Add(sFileName)
+
+    Catch ex As Exception
+        errors.Add(oPart.DisplayName & " — " & ex.Message)
+    End Try
+End Sub

@@ -1,0 +1,231 @@
+'==============================================================================
+' NAME:         ERP Data Export Template
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Scans an assembly and exports BOM data in CSV format ready for ERP import.
+'   Supports Generic, Ostendo, SAP, and Custom formats.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be an Assembly document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'
+' NOTES:
+'   Based on Ostendo ERP read integration at Wyma Solutions.
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim sFormat As String = "Generic"   ' "Generic", "Ostendo", "SAP", "Custom"
+Dim sDelimiter As String = ","
+Dim sOutputPath As String = ""
+
+Dim aCustomColumns As New List(Of String) From {
+    "PartNumber", "Description", "Material", "Quantity", "Weight",
+    "Revision", "Author", "Project"
+}
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is AssemblyDocument) Then
+    MsgBox("Run this rule from an Assembly document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+
+' --- Set output path ---
+If sOutputPath = "" Then
+    Dim sFolder As String = System.IO.Path.GetDirectoryName(oAsmDoc.FullFileName)
+    sOutputPath = sFolder & "\ERP_Export_" & DateTime.Now.ToString("yyyyMMdd_HHmmss") & ".csv"
+End If
+
+' --- Collect BOM data ---
+Dim colBOM As New List(Of Dictionary(Of String, String))
+Dim oOccs As ComponentOccurrences = oAsmDoc.ComponentDefinition.Occurrences
+
+Application.StatusBarText = "Scanning assembly for ERP export..."
+
+ScanAssembly(oOccs, colBOM, 0)
+
+If colBOM.Count = 0 Then
+    MsgBox("No components found in assembly.", vbInformation, "Empty BOM")
+    Exit Sub
+End If
+
+' --- Export to CSV ---
+Application.StatusBarText = "Generating ERP export..."
+
+Dim sCSV As String = GenerateCSV(colBOM, sFormat, sDelimiter, aCustomColumns)
+
+Try
+    System.IO.File.WriteAllText(sOutputPath, sCSV)
+Catch ex As Exception
+    MsgBox("Error saving CSV: " & ex.Message, vbExclamation, "Error")
+    Exit Sub
+End Try
+
+' --- Show results ---
+Dim sMsg As String = "=== ERP Export Complete ===" & vbCrLf & vbCrLf
+sMsg &= "Format: " & sFormat & vbCrLf
+sMsg &= "Components: " & colBOM.Count & vbCrLf
+sMsg &= "Output: " & sOutputPath
+
+MsgBox(sMsg, vbInformation, "ERP Export")
+
+Application.StatusBarText = "Done"
+
+'==============================================================================
+' HELPER FUNCTIONS
+'==============================================================================
+
+Sub ScanAssembly(oOccs As ComponentOccurrences, colBOM As List(Of Dictionary(Of String, String)), nLevel As Integer)
+    Dim oOcc As ComponentOccurrence
+    For Each oOcc In oOccs
+        Try
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kVirtualComponentDocumentObject Then
+                Continue For
+            End If
+
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
+                Dim oSubAsm As AssemblyDocument = oOcc.Definition.Document
+                ScanAssembly(oSubAsm.ComponentDefinition.Occurrences, colBOM, nLevel + 1)
+                Continue For
+            End If
+
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kPartDocumentObject Then
+                Dim oPart As PartDocument = oOcc.Definition.Document
+                Dim oProps As PropertySet = oPart.PropertySets.Item("Design Tracking Properties")
+
+                Dim dict As New Dictionary(Of String, String)
+
+                Dim sPartNumber As String = ""
+                Dim sDescription As String = ""
+                Dim sMaterial As String = ""
+                Dim sRevision As String = ""
+                Dim sAuthor As String = ""
+                Dim sProject As String = ""
+                Dim sWeight As String = ""
+
+                Try
+                    sPartNumber = oProps.Item("Part Number").Value.ToString().Trim()
+                Catch
+                    sPartNumber = System.IO.Path.GetFileNameWithoutExtension(oPart.FullFileName)
+                End Try
+
+                Try
+                    sDescription = oProps.Item("Description").Value.ToString().Trim()
+                Catch
+                End Try
+
+                Try
+                    sMaterial = oProps.Item("Material").Value.ToString().Trim()
+                Catch
+                End Try
+
+                Try
+                    sRevision = oProps.Item("Revision Number").Value.ToString().Trim()
+                Catch
+                End Try
+
+                Try
+                    sAuthor = oProps.Item("Author").Value.ToString().Trim()
+                Catch
+                End Try
+
+                Try
+                    sProject = oProps.Item("Project").Value.ToString().Trim()
+                Catch
+                End Try
+
+                Try
+                    sWeight = oProps.Item("Weight").Value.ToString().Trim()
+                Catch
+                End Try
+
+                dict.Add("PartNumber", sPartNumber)
+                dict.Add("Description", sDescription)
+                dict.Add("Material", sMaterial)
+                dict.Add("Revision", sRevision)
+                dict.Add("Author", sAuthor)
+                dict.Add("Project", sProject)
+                dict.Add("Weight", sWeight)
+                dict.Add("Quantity", "1")
+                dict.Add("Level", nLevel.ToString())
+                dict.Add("FileName", System.IO.Path.GetFileName(oPart.FullFileName))
+
+                colBOM.Add(dict)
+            End If
+
+        Catch ex As Exception
+            Dim dict As New Dictionary(Of String, String)
+            dict.Add("PartNumber", "ERROR")
+            dict.Add("Description", ex.Message)
+            dict.Add("Material", "")
+            dict.Add("Revision", "")
+            dict.Add("Author", "")
+            dict.Add("Project", "")
+            dict.Add("Weight", "")
+            dict.Add("Quantity", "0")
+            dict.Add("Level", nLevel.ToString())
+            dict.Add("FileName", oOcc.Name)
+            colBOM.Add(dict)
+        End Try
+    Next
+End Sub
+
+Function GenerateCSV(colBOM As List(Of Dictionary(Of String, String)), sFormat As String, sDelimiter As String, aCustomColumns As List(Of String)) As String
+    Dim sCSV As String = ""
+    Dim sHeader As String = ""
+    Dim sLine As String = ""
+
+    Dim aColumns As New List(Of String)
+
+    Select Case sFormat
+        Case "Generic"
+            aColumns = New List(Of String) From {"PartNumber", "Description", "Material", "Quantity", "Weight"}
+
+        Case "Ostendo"
+            aColumns = New List(Of String) From {"PartNumber", "Description", "Material", "Quantity", "Weight", "Revision", "FileName"}
+
+        Case "SAP"
+            aColumns = New List(Of String) From {"PartNumber", "Description", "Material", "Quantity", "Weight", "Project"}
+
+        Case "Custom"
+            aColumns = aCustomColumns
+
+        Case Else
+            aColumns = New List(Of String) From {"PartNumber", "Description", "Material", "Quantity", "Weight"}
+    End Select
+
+    For Each sCol As String In aColumns
+        If sHeader <> "" Then sHeader &= sDelimiter
+        sHeader &= """" & sCol & """"
+    Next
+    sCSV = sHeader & vbCrLf
+
+    For Each dict As Dictionary(Of String, String) In colBOM
+        sLine = ""
+        For Each sCol As String In aColumns
+            If sLine <> "" Then sLine &= sDelimiter
+            Dim sValue As String = ""
+            If dict.ContainsKey(sCol) Then
+                sValue = dict(sCol)
+            End If
+            sLine &= """" & sValue.Replace("""", """""") & """"
+        Next
+        sCSV &= sLine & vbCrLf
+    Next
+
+    Return sCSV
+End Function

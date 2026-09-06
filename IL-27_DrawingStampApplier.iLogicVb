@@ -1,0 +1,85 @@
+'==============================================================================
+' NAME:         Drawing Stamp Applier
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Adds a stamp (ISSUED, APPROVED, PRELIMINARY) to the drawing.
+'   Fills date and author automatically.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be a Drawing document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim sStampType As String = "ISSUED"     ' "ISSUED", "APPROVED", "PRELIMINARY"
+Dim dStampX As Double = 200.0
+Dim dStampY As Double = 200.0
+Dim bAllSheets As Boolean = True
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is DrawingDocument) Then
+    MsgBox("Run this rule from a Drawing document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oDrawDoc As DrawingDocument = ThisApplication.ActiveDocument
+
+' --- Get author and date ---
+Dim sAuthor As String = ""
+Try
+    sAuthor = oDrawDoc.PropertySets.Item("Design Tracking Properties").Item("Author").Value.ToString().Trim()
+Catch
+    sAuthor = ThisApplication.UserName
+End Try
+
+Dim sDate As String = DateTime.Now.ToString("dd.MM.yyyy")
+
+' --- Confirmation ---
+Dim sMsg As String = "=== Drawing Stamp Applier ===" & vbCrLf & vbCrLf
+sMsg &= "Stamp type: " & sStampType & vbCrLf
+sMsg &= "Author: " & sAuthor & vbCrLf
+sMsg &= "Date: " & sDate & vbCrLf
+sMsg &= "Apply to all sheets: " & bAllSheets & vbCrLf
+sMsg &= vbCrLf & "Proceed?"
+
+If MsgBox(sMsg, vbYesNo + vbQuestion, "Stamp Applier") <> vbYes Then
+    Exit Sub
+End If
+
+' --- Apply stamp ---
+Dim nApplied As Integer = 0
+
+For Each oSheet As Sheet In oDrawDoc.Sheets
+    If Not bAllSheets And oSheet IsNot oDrawDoc.Sheets(1) Then
+        Continue For
+    End If
+
+    Try
+        Dim oSketch As DrawingSketch = oSheet.Sketches.Add()
+
+        Dim oPoint As Point2d = ThisApplication.TransientObjects.CreatePoint2d(dStampX, dStampY)
+        Dim oText As TextBox = oSketch.TextBoxes.AddFitted(oPoint, sStampType & " - " & sDate & " - " & sAuthor)
+
+        oText.FormattedText = "<StyleOverride FontSize='14' FontColor='255,0,0'>" & _
+                              sStampType & " - " & sDate & " - " & sAuthor & _
+                              "</StyleOverride>"
+
+        nApplied = nApplied + 1
+    Catch
+    End Try
+Next
+
+MsgBox("Stamp applied to " & nApplied & " sheet(s).", vbInformation, "Stamp Applier")

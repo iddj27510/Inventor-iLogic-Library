@@ -1,0 +1,110 @@
+'==============================================================================
+' NAME:         Frame Generator Profile Standardizer
+' AUTHOR:       Jugoslav Ilic
+' DATE:         04.09.2026.
+' VERSION:      1.0.0
+' LICENSE:      MIT — free to use with attribution
+' GITHUB:       github.com/iddj27510/iLogic-Library
+'
+' DESCRIPTION:
+'   Standardizes iProperties for Frame Generator members.
+'   Formats Description and Material according to defined template.
+'
+' PARAMETERS:
+'   None — configured at the top of the script.
+'
+' ASSUMPTIONS:
+'   Active document must be an Assembly document.
+'
+' TESTED ON:
+'   Autodesk Inventor 2027
+'==============================================================================
+
+' ============================================================
+' CONFIGURATION — edit before use
+' ============================================================
+Dim sDescriptionFormat As String = "{ProfileType} {Size} - {Material}"
+Dim sDefaultMaterial As String = "S235"
+' ============================================================
+
+' --- Context check ---
+If Not (TypeOf ThisApplication.ActiveDocument Is AssemblyDocument) Then
+    MsgBox("Run this rule from an Assembly document.", vbExclamation, "Wrong Document Type")
+    Exit Sub
+End If
+
+Dim oAsmDoc As AssemblyDocument = ThisApplication.ActiveDocument
+Dim oOccs As ComponentOccurrences = oAsmDoc.ComponentDefinition.Occurrences
+
+Dim sLog As String = ""
+
+ScanForFrameMembers(oOccs, sLog)
+
+MsgBox("=== Frame Generator Profile Standardizer ===" & vbCrLf & vbCrLf & sLog, vbInformation, "Frame Standardizer")
+
+'==============================================================================
+' HELPER FUNCTIONS
+'==============================================================================
+
+Sub ScanForFrameMembers(oOccs As ComponentOccurrences, ByRef sLog As String)
+    Dim oOcc As ComponentOccurrence
+    For Each oOcc In oOccs
+        Try
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kVirtualComponentDocumentObject Then
+                Continue For
+            End If
+
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kAssemblyDocumentObject Then
+                Dim oSubAsm As AssemblyDocument = oOcc.Definition.Document
+                ScanForFrameMembers(oSubAsm.ComponentDefinition.Occurrences, sLog)
+                Continue For
+            End If
+
+            If oOcc.DefinitionDocumentType = DocumentTypeEnum.kPartDocumentObject Then
+                Dim oPart As PartDocument = oOcc.Definition.Document
+
+                Try
+                    Dim oFGMgr As Object = oPart.ComponentDefinition.FrameGenerator
+                    If oFGMgr IsNot Nothing Then
+                        Dim oProps As PropertySet = oPart.PropertySets.Item("Design Tracking Properties")
+
+                        Dim sProfileType As String = ""
+                        Dim sSize As String = ""
+
+                        Try
+                            sProfileType = oProps.Item("Profile Type").Value.ToString()
+                        Catch
+                        End Try
+
+                        Try
+                            sSize = oProps.Item("Size").Value.ToString()
+                        Catch
+                        End Try
+
+                        Dim sDesc As String = sDescriptionFormat
+                        sDesc = sDesc.Replace("{ProfileType}", sProfileType)
+                        sDesc = sDesc.Replace("{Size}", sSize)
+                        sDesc = sDesc.Replace("{Material}", sDefaultMaterial)
+
+                        Try
+                            oProps.Item("Description").Value = sDesc
+                        Catch
+                            oPart.PropertySets.Item("Design Tracking Properties").Add(sDesc, "Description")
+                        End Try
+
+                        Try
+                            oProps.Item("Material").Value = sDefaultMaterial
+                        Catch
+                            oPart.PropertySets.Item("Design Tracking Properties").Add(sDefaultMaterial, "Material")
+                        End Try
+
+                        oPart.Save()
+                        sLog &= "✓ " & oOcc.Name & " → " & sDesc & vbCrLf
+                    End If
+                Catch
+                End Try
+            End If
+        Catch
+        End Try
+    Next
+End Sub
