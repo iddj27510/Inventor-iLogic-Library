@@ -1,0 +1,973 @@
+﻿' ==============================================================================
+' FLAT PATTERN DXF BATCH EXPORTER  |  IL-03
+' ==============================================================================
+'
+' Author  : Jugoslav Ilic
+' Version : v6.7.1  |  08.09.2026
+' License : MIT — free to use with attribution
+' GitHub  : github.com/iddj27510/Inventor-iLogic-Library
+'
+' ------------------------------------------------------------------------------
+' WHAT THIS TOOL DOES
+' ------------------------------------------------------------------------------
+' Automates the most repetitive sheet metal task in Autodesk Inventor:
+' exporting flat pattern DXF files for laser cutting and CNC punching.
+'
+' Without this tool:
+'   Open part → find flat pattern → File > Export > DXF → name the file →
+'   repeat for every sheet metal part in the assembly.
+'   Manual export requires repeated per-part interaction for each unique part.
+'
+' With this tool:
+'   Run once from the assembly.
+'   Every sheet metal part is found, unfolded (if needed), and exported
+'   automatically. Non-sheet-metal parts are automatically skipped and
+'   listed in the report.
+'   The entire batch runs as a single automated operation.
+'
+' ------------------------------------------------------------------------------
+' OUTPUT FILENAME FORMAT
+' ------------------------------------------------------------------------------
+'   <PartNumber>_FP_t<Thickness><Unit>_<Revision>.dxf
+'
+'   Examples:
+'     BRACKET-001_FP_t2_RA.dxf          Part in millimeters, Revision A
+'     BRACKET-001_FP_t0.079in_RA.dxf    Part in inches
+'     BRACKET-001_FP_t2_REV-NA.dxf      Revision iProperty not filled in
+'
+' ------------------------------------------------------------------------------
+' HOW TO USE
+' ------------------------------------------------------------------------------
+'   1. Open an Assembly (.iam) in Autodesk Inventor.
+'   2. Edit the CONFIG section below if needed (defaults work for most cases).
+'   3. Run this rule from the Inventor iLogic panel.
+'   4. DXF files appear in a "DXF_Export" subfolder next to the assembly.
+'   5. A report window opens — results are selectable and copyable.
+'
+' ------------------------------------------------------------------------------
+' WHAT THE REPORT SHOWS
+' ------------------------------------------------------------------------------
+'   Exported        — parts successfully written to DXF
+'   Errors          — unexpected failures (check these first)
+'   Warnings        — non-critical issues (unsaved parts, edge cases)
+'   No flat pattern — sheet metal parts that could not be unfolded
+'   Skipped         — Content Center library parts, SKIP mode collisions
+'   Not sheet metal — standard parts (springs, screws, etc.) — expected
+'
+' ------------------------------------------------------------------------------
+' REQUIREMENTS
+' ------------------------------------------------------------------------------
+'   - Active document must be a saved Assembly (.iam)
+'   - Autodesk Inventor 2020 or later
+'   - Sheet metal parts must have a valid Thickness parameter
+'
+' ------------------------------------------------------------------------------
+' DXF LAYER STRUCTURE
+' ------------------------------------------------------------------------------
+'   IV_OUTER      — cutting contour
+'   IV_BEND_UP    — bend up direction
+'   IV_BEND_DOWN  — bend down direction
+'   IV_TANGENT    — explicitly hidden via InvisibleLayers parameter
+'
+'   Tangent edges are excluded from the DXF output using the InvisibleLayers
+'   export parameter. This keeps the DXF clean and unambiguous for laser/punch
+'   CAM workflows where tangent geometry is not required.
+'
+'   Layer colors and line types are configured in your CAM or nesting software
+'   (Lantek, Radan, SigmaNEST) by layer name — not in the DXF export itself.
+'   This is standard practice for laser/punch CAM workflows.
+'
+' ------------------------------------------------------------------------------
+' TECHNICAL HIGHLIGHTS  (for engineers and code reviewers)
+' ------------------------------------------------------------------------------
+'   - Recursive assembly traversal with branch-local circular reference guard
+'   - Correct quantity counting even when the same sub-assembly appears on
+'     multiple branches of the assembly tree
+'   - Cross-part filename collision detection with forced VERSION fallback
+'   - OutputIndex registration only after confirmed successful write
+'     (no phantom reservations if WriteDataToFile throws)
+'   - Thickness read via Parameter.Value (Inventor database units),
+'     converted to the document active unit via UnitsOfMeasure.ConvertUnits()
+'   - InvariantCulture formatting prevents "1,5" vs "1.5" regional bugs
+'   - Folder-open side effect completes before BuildReport so related warnings
+'     are visible in the final report shown to the user
+'   - The complete report is saved as a single UTF-8 log file
+'   - ScreenUpdating suspended for performance, restored in Finally block
+'   - Flat patterns created by this tool are deleted after export by default,
+'     leaving every model in its original state
+'   - Windows reserved filenames (CON, PRN, NUL, LPT1...) detected and
+'     renamed — a real failure mode in ERP-driven Part Number workflows
+'   - Tangent edges excluded via InvisibleLayers — not by omission, which
+'     would leave Inventor free to export them on the default layer
+'
+' ==============================================================================
+
+Sub Main()
+
+    ' ==========================================================================
+    ' CONFIG — edit only this section
+    ' ==========================================================================
+
+    ' Where to save DXF files.
+    ' Leave empty to create a "DXF_Export" subfolder next to the assembly.
+    ' Or specify a full path: "C:\Production\DXF Output\"
+    Dim OutputFolder     As String  = ""
+    Dim OutputSubfolder  As String  = "DXF_Export"
+
+    ' DXF format version.
+    ' Allowed: R12 | 2000 | 2004 | 2007 | 2010 | 2013 | 2018
+    ' Use 2018 for modern CAM/nesting software (Lantek, Radan, SigmaNEST).
+    ' Use R12 for maximum compatibility with older systems.
+    Dim DxfAcadVer       As String  = "2018"
+
+    ' DXF layer names.
+    ' Tangent edges are excluded via InvisibleLayers in the export string —
+    ' not required by the target laser/punch workflow.
+    ' Layer colors and line types are configured in your CAM or nesting software
+    ' by layer name — they are not controlled by the DXF export string.
+    Dim LayerOuter    As String = "IV_OUTER"
+    Dim LayerBendUp   As String = "IV_BEND_UP"
+    Dim LayerBendDown As String = "IV_BEND_DOWN"
+    Dim LayerTangent  As String = "IV_TANGENT"   ' Referenced only to mark as invisible
+
+    ' Include material thickness in the filename.
+    ' Result: _t2 (mm), _t0.079in (inches), _t3.5 etc.
+    Dim IncludeThickness  As Boolean = True
+
+    ' Include revision number in the filename.
+    ' Reads the "Revision Number" iProperty.
+    ' If the property is empty, uses RevisionMissing token below.
+    Dim IncludeRevision   As Boolean = True
+
+    ' Decimal places for thickness in the filename.
+    ' F3 = three decimal places, trailing zeros removed.
+    ' Example: 2.000 → 2   1.500 → 1.5   0.950 → 0.95
+    Dim ThicknessDecimals As String  = "F3"
+
+    ' iProperty names used to build the filename.
+    ' Change only if your Inventor templates use different property names.
+    Dim PropsetDesign     As String  = "Design Tracking Properties"
+    Dim PropPartNumber    As String  = "Part Number"
+    Dim PropRevision      As String  = "Revision Number"
+
+    ' Text used in filename when Revision Number iProperty is empty.
+    ' "REV-NA" makes it clear the revision is unknown, not zero.
+    Dim RevisionMissing   As String  = "REV-NA"
+
+    ' What to do when a DXF with the same name already exists.
+    '   OVERWRITE — replace it (good for automated pipelines)
+    '   SKIP      — keep the existing file (good for incremental runs)
+    '   VERSION   — add _001, _002 ... (safest — recommended)
+    Dim ExistingFileMode  As String  = "VERSION"
+
+    ' Counter format used in VERSION mode.
+    ' D3 → _001, _002   D2 → _01, _02
+    Dim VersionCounterFormat As String = "D3"
+
+    ' Controls what happens to flat patterns created by this tool.
+    '   False (recommended) — delete after export, model stays unchanged
+    '   True               — keep in model (useful for review)
+    Dim KeepCreatedFlat   As Boolean = False
+
+    ' Set True only if your sheet metal Content Center library parts
+    ' need DXF export. Normally, standard library parts are skipped.
+    Dim ExportContentCenter As Boolean = False
+
+    ' Open the output folder in Windows Explorer after export finishes.
+    Dim OpenFolder        As Boolean = True
+
+    ' Save a single timestamped .log file in the output folder.
+    Dim WriteLog          As Boolean = True
+
+    ' ==========================================================================
+    ' VALIDATION — catches configuration errors before the batch starts
+    ' ==========================================================================
+
+    ' Validate ExistingFileMode — a typo here causes silent failures later.
+    Dim fileMode As String = ExistingFileMode.Trim().ToUpperInvariant()
+    If fileMode <> "OVERWRITE" AndAlso fileMode <> "SKIP" AndAlso fileMode <> "VERSION" Then
+        MsgBox("ExistingFileMode must be OVERWRITE, SKIP or VERSION." & vbCrLf &
+               "Current value: """ & ExistingFileMode & """",
+               vbCritical, "Invalid Configuration")
+        Return
+    End If
+
+    ' Validate DxfAcadVer — Inventor accepts only specific version strings.
+    ' An unsupported value causes a silent export failure with no error message.
+    Dim validVersions As String = "|R12|2000|2004|2007|2010|2013|2018|"
+    If Not validVersions.Contains("|" & DxfAcadVer.Trim() & "|") Then
+        MsgBox("DxfAcadVer must be R12, 2000, 2004, 2007, 2010, 2013 or 2018." & vbCrLf &
+               "Current value: """ & DxfAcadVer & """",
+               vbCritical, "Invalid Configuration")
+        Return
+    End If
+
+    ' Must run from an Assembly document.
+    If Not TypeOf ThisApplication.ActiveDocument Is AssemblyDocument Then
+        MsgBox("Active document must be an Assembly.", vbExclamation, "Wrong Document Type")
+        Return
+    End If
+
+    Dim asm As AssemblyDocument = ThisApplication.ActiveDocument
+
+    ' Assembly must be saved — FullFileName is used to resolve the output folder
+    ' and to seed the circular reference detection set.
+    If String.IsNullOrWhiteSpace(asm.FullFileName) Then
+        MsgBox("Assembly must be saved before export.", vbExclamation, "Unsaved Document")
+        Return
+    End If
+
+    ' ==========================================================================
+    ' STATE — result collections populated during the two-phase batch run.
+    '
+    ' Passed explicitly to every helper function.
+    ' iLogic compiles rules inside a public class — custom types in public
+    ' function signatures cause compile errors. Passing plain .NET collections
+    ' avoids this iLogic-specific limitation while keeping the code clean.
+    ' ==========================================================================
+
+    Dim Exported      As New System.Collections.Generic.List(Of String)
+    Dim NoFlatPattern As New System.Collections.Generic.List(Of String)
+    Dim NotSheetMetal As New System.Collections.Generic.List(Of String)
+    Dim Skipped       As New System.Collections.Generic.List(Of String)
+    Dim Errors        As New System.Collections.Generic.List(Of String)
+    Dim Warnings      As New System.Collections.Generic.List(Of String)
+    Dim Processed     As New System.Collections.Generic.HashSet(Of String)
+    Dim Quantities    As New System.Collections.Generic.Dictionary(Of String, Integer)
+
+    ' Maps every output filename (base and version-suffixed) to its source IPT.
+    ' Enables cross-part collision detection: if two different parts produce the
+    ' same DXF filename, a warning is raised and VERSION is forced — preventing
+    ' silent data loss regardless of the FileMode setting.
+    ' Entries added only after a confirmed successful write — no phantom reservations.
+    Dim OutputIndex   As New System.Collections.Generic.Dictionary(Of String, String)
+
+    Dim TotalParts    As Integer = 0
+    Dim TotalAsm      As Integer = 0
+
+    ' Suspend screen refresh during the batch — significantly faster on large assemblies.
+    ' Finally block guarantees restoration even if an exception occurs mid-batch.
+    Dim prevScreenUpdating As Boolean = ThisApplication.ScreenUpdating
+    ThisApplication.ScreenUpdating = False
+
+    Try
+        Dim folder As String = ResolveFolder(asm, OutputFolder, OutputSubfolder)
+
+        Dim rootPath As New System.Collections.Generic.HashSet(Of String)
+        rootPath.Add(asm.FullFileName.ToUpperInvariant())
+
+        ' Phase 1 — collect unique parts, count occurrences, detect structure issues
+        Dim parts As System.Collections.Generic.List(Of PartDocument) =
+            CollectParts(asm.ComponentDefinition.Occurrences, rootPath,
+                         Processed, Quantities, Warnings, TotalParts, TotalAsm)
+
+        ' Phase 2 — export DXF for each unique part
+        For i As Integer = 0 To parts.Count - 1
+            Dim pct As Integer = CInt((i + 1) / System.Math.Max(parts.Count, 1) * 100)
+            ThisApplication.StatusBarText =
+                "DXF Export [" & pct & "%]  " & (i + 1) & " / " & parts.Count &
+                "  " & parts(i).DisplayName
+
+            ExportPart(parts(i), folder,
+                       Exported, NoFlatPattern, NotSheetMetal, Skipped, Errors, Warnings,
+                       Quantities, OutputIndex,
+                       DxfAcadVer, LayerOuter, LayerBendUp, LayerBendDown, LayerTangent,
+                       IncludeThickness, IncludeRevision, ThicknessDecimals,
+                       KeepCreatedFlat, fileMode, VersionCounterFormat,
+                       ExportContentCenter,
+                       PropsetDesign, PropPartNumber, PropRevision, RevisionMissing)
+        Next
+
+        ThisApplication.StatusBarText = "DXF Export complete"
+
+        ' OpenFolder runs before BuildReport so any failure warning
+        ' appears in the final report shown to the user.
+        If OpenFolder AndAlso Exported.Count > 0 Then
+            Try
+                System.Diagnostics.Process.Start("explorer.exe", folder)
+            Catch ex As Exception
+                Warnings.Add("Could not open output folder: " & ex.Message)
+            End Try
+        End If
+
+        Dim report As String =
+            BuildReport(Exported, NoFlatPattern, NotSheetMetal, Skipped, Errors, Warnings,
+                        TotalParts, TotalAsm, Processed.Count,
+                        folder, asm.DisplayName, fileMode)
+
+        ' Single log file — contains the complete report including all warnings.
+        ' If saving fails, the user is notified via MsgBox before ShowReport opens.
+        If WriteLog Then
+            Dim logSaved As Boolean = WriteReportFile(folder, report, asm.DisplayName)
+            If Not logSaved Then
+                MsgBox("Log file could not be saved." & vbCrLf & "Output: " & folder,
+                       vbExclamation, "Log Warning")
+            End If
+        End If
+
+        ShowReport(report, "Export complete — " & Exported.Count & " file(s)")
+
+    Finally
+        ThisApplication.ScreenUpdating = prevScreenUpdating
+    End Try
+
+End Sub
+
+' ==============================================================================
+' RESOLVE OUTPUT FOLDER
+' Creates the target directory if it does not already exist.
+' ==============================================================================
+Function ResolveFolder(asm As AssemblyDocument,
+                       OutputFolder As String,
+                       OutputSubfolder As String) As String
+    Dim base As String
+    If String.IsNullOrWhiteSpace(OutputFolder) Then
+        base = System.IO.Path.Combine(
+                   System.IO.Path.GetDirectoryName(asm.FullFileName), OutputSubfolder)
+    Else
+        base = OutputFolder.Trim()
+    End If
+    System.IO.Directory.CreateDirectory(base)
+    Return base
+End Function
+
+' ==============================================================================
+' COLLECT PARTS — Phase 1
+'
+' Recursively walks the assembly tree. Returns unique PartDocuments to export.
+' Builds the Quantities dictionary simultaneously.
+'
+' CIRCULAR REFERENCE GUARD
+'   asmPath holds only assemblies on the CURRENT branch.
+'   The same sub-assembly CAN appear on different branches — quantities correct.
+'   Only true A → B → A loops are blocked.
+'
+' WHY BRANCH-LOCAL MATTERS FOR QUANTITIES
+'   MAIN → SUB-A (BRACKET x1) + SUB-A (BRACKET x1) = BRACKET x2  (correct)
+'   A global "visited" set would block the second SUB-A → BRACKET x1  (wrong)
+' ==============================================================================
+Function CollectParts(occs As ComponentOccurrences,
+                      asmPath    As System.Collections.Generic.HashSet(Of String),
+                      Processed  As System.Collections.Generic.HashSet(Of String),
+                      Quantities As System.Collections.Generic.Dictionary(Of String, Integer),
+                      Warnings   As System.Collections.Generic.List(Of String),
+                      ByRef TotalParts As Integer,
+                      ByRef TotalAsm   As Integer) _
+                      As System.Collections.Generic.List(Of PartDocument)
+
+    Dim parts As New System.Collections.Generic.List(Of PartDocument)
+
+    For Each occ As ComponentOccurrence In occs
+        Try
+            If occ.Suppressed OrElse Not occ.Enabled Then Continue For
+
+            Select Case occ.DefinitionDocumentType
+
+                Case DocumentTypeEnum.kAssemblyDocumentObject
+                    TotalAsm += 1
+                    Dim subAsm As AssemblyDocument =
+                        CType(occ.Definition.Document, AssemblyDocument)
+
+                    If String.IsNullOrWhiteSpace(subAsm.FullFileName) Then
+                        Warnings.Add("Unsaved sub-assembly skipped: " & occ.Name)
+                        Continue For
+                    End If
+
+                    ' Unresolved reference — accessing Occurrences would throw.
+                    If subAsm.ComponentDefinition Is Nothing Then
+                        Warnings.Add("Sub-assembly not resolved, skipped: " & occ.Name)
+                        Continue For
+                    End If
+
+                    Dim asmKey As String = subAsm.FullFileName.ToUpperInvariant()
+
+                    If asmPath.Contains(asmKey) Then
+                        Warnings.Add("Circular reference skipped: " & occ.Name)
+                        Continue For
+                    End If
+
+                    ' New branch path — independent per recursion level.
+                    ' Allows parallel branches to visit the same assembly without blocking.
+                    Dim branchPath As New System.Collections.Generic.HashSet(Of String)(asmPath)
+                    branchPath.Add(asmKey)
+                    parts.AddRange(
+                        CollectParts(subAsm.ComponentDefinition.Occurrences, branchPath,
+                                     Processed, Quantities, Warnings, TotalParts, TotalAsm))
+
+                Case DocumentTypeEnum.kPartDocumentObject
+                    TotalParts += 1
+                    Dim part As PartDocument =
+                        CType(occ.Definition.Document, PartDocument)
+
+                    If String.IsNullOrWhiteSpace(part.FullFileName) Then
+                        Warnings.Add("Unsaved part skipped: " & occ.Name)
+                        Continue For
+                    End If
+
+                    Dim key As String = part.FullFileName.ToUpperInvariant()
+
+                    ' Count every occurrence including duplicates.
+                    If Quantities.ContainsKey(key) Then
+                        Quantities(key) += 1
+                    Else
+                        Quantities(key) = 1
+                    End If
+
+                    ' HashSet.Add() returns False if already present — export once only.
+                    If Processed.Add(key) Then parts.Add(part)
+
+            End Select
+
+        Catch ex As Exception
+            Warnings.Add(occ.Name & " — Collect — " & ex.Message)
+        End Try
+    Next
+
+    Return parts
+End Function
+
+' ==============================================================================
+' EXPORT PART — Phase 2
+'
+' Processes one PartDocument through these steps:
+'   1. Skip Content Center library parts (configurable)
+'   2. Skip non-sheet-metal parts
+'   3. Create flat pattern if missing (Unfold), track as created
+'   4. Build filename from iProperties + thickness + revision
+'   5. Detect cross-part collision — warn and force VERSION
+'   6. Resolve final path per ExistingFileMode
+'   7. Write the DXF via Inventor DataIO API
+'   8. Register in OutputIndex only after successful write
+'   9. Cleanup — delete or exit flat pattern if we created it
+'
+' The Finally block guarantees step 9 always runs.
+' The exporter cleans up flat patterns created during the run,
+' restoring the model to its previous state whenever cleanup succeeds.
+'
+' The "stage" variable names the failed step in error messages,
+' making failures immediately actionable without further investigation.
+' ==============================================================================
+Sub ExportPart(part As PartDocument,
+               folder As String,
+               Exported      As System.Collections.Generic.List(Of String),
+               NoFlatPattern As System.Collections.Generic.List(Of String),
+               NotSheetMetal As System.Collections.Generic.List(Of String),
+               Skipped       As System.Collections.Generic.List(Of String),
+               Errors        As System.Collections.Generic.List(Of String),
+               Warnings      As System.Collections.Generic.List(Of String),
+               Quantities    As System.Collections.Generic.Dictionary(Of String, Integer),
+               OutputIndex   As System.Collections.Generic.Dictionary(Of String, String),
+               DxfAcadVer As String,
+               LayerOuter As String, LayerBendUp As String,
+               LayerBendDown As String, LayerTangent As String,
+               IncludeThickness As Boolean, IncludeRevision As Boolean,
+               ThicknessDecimals As String, KeepCreatedFlat As Boolean,
+               FileMode As String, VersionCounterFormat As String,
+               ExportContentCenter As Boolean,
+               PropsetDesign As String, PropPartNumber As String,
+               PropRevision As String, RevisionMissing As String)
+
+    Dim stage   As String = "Init"
+    Dim smDef   As SheetMetalComponentDefinition = Nothing
+    Dim created As Boolean = False
+
+    Try
+        stage = "Content Center check"
+        If Not ExportContentCenter Then
+            If IsContentCenterPart(part, Warnings) Then
+                Skipped.Add(part.DisplayName & QtyTag(part, Quantities) & " — Content Center")
+                Return
+            End If
+        End If
+
+        stage = "Sheet metal check"
+        smDef = TryCast(part.ComponentDefinition, SheetMetalComponentDefinition)
+        If smDef Is Nothing Then
+            NotSheetMetal.Add(part.DisplayName & QtyTag(part, Quantities))
+            Return
+        End If
+
+        ' Create flat pattern if missing. Unfold() can fail for complex geometry.
+        ' Failure is logged — the batch continues with the next part.
+        stage = "Flat pattern"
+        If Not smDef.HasFlatPattern Then
+            Try
+                smDef.Unfold()
+                created = True
+            Catch
+                NoFlatPattern.Add(part.DisplayName & QtyTag(part, Quantities) & " — cannot unfold")
+                Return
+            End Try
+        End If
+
+        stage = "Build filename"
+        Dim fileName  As String = BuildFileName(part, smDef,
+                                      IncludeThickness, IncludeRevision, ThicknessDecimals,
+                                      PropsetDesign, PropPartNumber, PropRevision, RevisionMissing)
+        Dim sourceKey As String = part.FullFileName.ToUpperInvariant()
+        Dim baseKey   As String = fileName.ToUpperInvariant()
+
+        ' Cross-part collision: two different IPTs targeting the same output filename.
+        ' Checked against the BASE name so detection works even when the first part
+        ' was already renamed to _001 during this same run.
+        stage = "Collision check"
+        Dim forcedVersion As Boolean = False
+        If OutputIndex.ContainsKey(baseKey) Then
+            If OutputIndex(baseKey) <> sourceKey Then
+                Warnings.Add("Output name collision: """ & fileName &
+                             """ also used by " &
+                             System.IO.Path.GetFileName(OutputIndex(baseKey)))
+                forcedVersion = True
+            End If
+        End If
+
+        Dim effectiveMode As String = If(forcedVersion, "VERSION", FileMode)
+        Dim renamed   As Boolean = False
+        Dim filePath  As String  =
+            ResolveFilePath(folder, fileName, effectiveMode, VersionCounterFormat, renamed)
+
+        If filePath = "" Then
+            Skipped.Add(part.DisplayName & QtyTag(part, Quantities) & " — file exists (SKIP mode)")
+            Return
+        End If
+
+        stage = "Write DXF"
+        smDef.DataIO.WriteDataToFile(
+            DxfOptions(DxfAcadVer, LayerOuter, LayerBendUp, LayerBendDown, LayerTangent),
+            filePath)
+
+        ' Register only after confirmed write — no phantom reservations.
+        ' Both base and actual name indexed — covers version-renamed cases.
+        If Not OutputIndex.ContainsKey(baseKey) Then OutputIndex(baseKey) = sourceKey
+        Dim outKey As String = System.IO.Path.GetFileName(filePath).ToUpperInvariant()
+        If Not OutputIndex.ContainsKey(outKey) Then OutputIndex(outKey) = sourceKey
+
+        Dim entry As String = System.IO.Path.GetFileName(filePath) & QtyTag(part, Quantities)
+        If renamed Then entry &= "  [RENAMED]"
+        Exported.Add(entry)
+
+    Catch ex As Exception
+        Errors.Add(part.DisplayName & " — Stage: " & stage & " — " & ex.Message)
+
+    Finally
+        ' Always runs — only acts on flat patterns that WE created.
+        ' Never touches flat patterns that existed before this export.
+        '   KeepCreatedFlat = False → Delete (recommended — model unchanged)
+        '   KeepCreatedFlat = True  → Exit edit mode (flat pattern stays)
+        If created AndAlso smDef IsNot Nothing Then
+            If KeepCreatedFlat Then
+                If smDef.HasFlatPattern Then
+                    Try : smDef.FlatPattern.ExitEdit() : Catch : End Try
+                End If
+            Else
+                If smDef.HasFlatPattern Then
+                    Try : smDef.FlatPattern.Delete() : Catch : End Try
+                End If
+            End If
+        End If
+    End Try
+
+End Sub
+
+' ==============================================================================
+' CONTENT CENTER DETECTION
+'
+' Uses Inventor API IsContentMember — more reliable than reading the
+' "Content Center Member" iProperty string, which can be missing or incorrect
+' in older files, derived parts, and custom library configurations.
+'
+' Unknown component type → logs a warning, returns False (exports rather than
+' silently drops). User is informed and can verify the result.
+' ==============================================================================
+Function IsContentCenterPart(part As PartDocument,
+                              Warnings As System.Collections.Generic.List(Of String)) As Boolean
+    Try
+        Dim smDef As SheetMetalComponentDefinition =
+            TryCast(part.ComponentDefinition, SheetMetalComponentDefinition)
+        If smDef IsNot Nothing Then Return smDef.IsContentMember
+
+        Dim compDef As PartComponentDefinition =
+            TryCast(part.ComponentDefinition, PartComponentDefinition)
+        If compDef IsNot Nothing Then Return compDef.IsContentMember
+
+        Warnings.Add(part.DisplayName & " — Content Center check inconclusive, exported anyway")
+        Return False
+
+    Catch ex As Exception
+        Warnings.Add(part.DisplayName & " — Content Center check failed: " & ex.Message)
+        Return False
+    End Try
+End Function
+
+' ==============================================================================
+' QTY TAG
+' Returns "  [QTY 8]" for parts used more than once, "" for single-use parts.
+' ==============================================================================
+Function QtyTag(part As PartDocument,
+                Quantities As System.Collections.Generic.Dictionary(Of String, Integer)) As String
+    Dim key As String  = part.FullFileName.ToUpperInvariant()
+    Dim qty As Integer = If(Quantities.ContainsKey(key), Quantities(key), 1)
+    Return If(qty > 1, "  [QTY " & qty & "]", "")
+End Function
+
+' ==============================================================================
+' BUILD FILENAME
+' Format: <PartNumber>_FP[_t<Thickness><Unit>][_<Revision>].dxf
+'
+' Fallbacks:
+'   Part Number empty → use IPT filename without extension
+'   Revision empty    → use RevisionMissing token (e.g. "REV-NA")
+'   Thickness error   → thickness tag omitted, export continues
+' ==============================================================================
+Function BuildFileName(part As PartDocument,
+                       smDef As SheetMetalComponentDefinition,
+                       IncludeThickness  As Boolean,
+                       IncludeRevision   As Boolean,
+                       ThicknessDecimals As String,
+                       PropsetDesign   As String,
+                       PropPartNumber  As String,
+                       PropRevision    As String,
+                       RevisionMissing As String) As String
+
+    Dim num As String = ReadProperty(part, PropsetDesign, PropPartNumber)
+    Dim rev As String = ReadProperty(part, PropsetDesign, PropRevision)
+
+    If String.IsNullOrWhiteSpace(num) Then
+        num = System.IO.Path.GetFileNameWithoutExtension(part.FullFileName)
+    End If
+
+    Dim name As String = Sanitize(num) & "_FP"
+
+    If IncludeThickness Then
+        Dim tag As String = GetThicknessTag(smDef, part.UnitsOfMeasure, ThicknessDecimals)
+        If tag <> "" Then name &= tag
+    End If
+
+    If IncludeRevision Then
+        name &= If(String.IsNullOrWhiteSpace(rev),
+                   "_" & RevisionMissing,
+                   "_R" & Sanitize(rev))
+    End If
+
+    Return name & ".dxf"
+End Function
+
+' ==============================================================================
+' GET THICKNESS TAG
+'
+' The Inventor API exposes Parameter.Value in database units.
+' ConvertUnits() converts that value to the document's active length unit.
+'
+' InvariantCulture: always "." as decimal separator — never "," — regardless
+' of Windows regional settings. Critical for filenames in European locales.
+'
+' Trailing zeros removed: 2.000 → 2   1.500 → 1.5   0.950 → 0.95
+' ==============================================================================
+Function GetThicknessTag(smDef As SheetMetalComponentDefinition,
+                         uom   As UnitsOfMeasure,
+                         ThicknessDecimals As String) As String
+    Try
+        Dim thicknessCm  As Double        = smDef.Thickness.Value
+        Dim docUnits     As UnitsTypeEnum = uom.LengthUnits
+        Dim displayValue As Double
+        Dim unitSuffix   As String
+
+        Select Case docUnits
+            Case UnitsTypeEnum.kMillimeterLengthUnits
+                displayValue = uom.ConvertUnits(thicknessCm,
+                                   UnitsTypeEnum.kCentimeterLengthUnits,
+                                   UnitsTypeEnum.kMillimeterLengthUnits)
+                unitSuffix = ""
+
+            Case UnitsTypeEnum.kInchLengthUnits
+                displayValue = uom.ConvertUnits(thicknessCm,
+                                   UnitsTypeEnum.kCentimeterLengthUnits,
+                                   UnitsTypeEnum.kInchLengthUnits)
+                unitSuffix = "in"
+
+            Case UnitsTypeEnum.kCentimeterLengthUnits
+                displayValue = thicknessCm
+                unitSuffix = "cm"
+
+            Case UnitsTypeEnum.kMeterLengthUnits
+                displayValue = uom.ConvertUnits(thicknessCm,
+                                   UnitsTypeEnum.kCentimeterLengthUnits,
+                                   UnitsTypeEnum.kMeterLengthUnits)
+                unitSuffix = "m"
+
+            Case UnitsTypeEnum.kFootLengthUnits
+                displayValue = uom.ConvertUnits(thicknessCm,
+                                   UnitsTypeEnum.kCentimeterLengthUnits,
+                                   UnitsTypeEnum.kFootLengthUnits)
+                unitSuffix = "ft"
+
+            Case Else
+                displayValue = thicknessCm * 10
+                unitSuffix = "mm"
+        End Select
+
+        Dim t As String = displayValue.ToString(
+                              ThicknessDecimals,
+                              System.Globalization.CultureInfo.InvariantCulture)
+        t = t.TrimEnd("0"c).TrimEnd("."c)
+        Return "_t" & t & unitSuffix
+
+    Catch
+        Return ""
+    End Try
+End Function
+
+' ==============================================================================
+' READ IPROPERTY
+' Returns Nothing if the property is missing, unreadable, or empty.
+' ==============================================================================
+Function ReadProperty(part As PartDocument,
+                      PropsetDesign As String,
+                      propName As String) As String
+    Try
+        Dim value As String = part.PropertySets _
+            .Item(PropsetDesign).Item(propName).Value.ToString().Trim()
+        Return If(String.IsNullOrWhiteSpace(value), Nothing, value)
+    Catch
+        Return Nothing
+    End Try
+End Function
+
+' ==============================================================================
+' DXF OPTIONS STRING
+'
+' Builds the format descriptor for DataIO.WriteDataToFile().
+'
+' OuterProfileLayer, BendUpLayer, BendDownLayer — named layers in the DXF.
+'
+' InvisibleLayers — explicitly hides the tangent layer so it is present in the
+' DXF layer list but contains no visible geometry. This is the correct way to
+' exclude tangent edges: omitting TangentLayer entirely would leave Inventor
+' free to export tangent geometry on a default layer.
+'
+' Layer colors and line types are not set here — they are configured in CAM
+' or nesting software by layer name. This is standard practice for laser/punch
+' CAM workflows and avoids format-string compatibility issues across Inventor
+' versions.
+' ==============================================================================
+Function DxfOptions(DxfAcadVer As String,
+                    LayerOuter As String,
+                    LayerBendUp As String,
+                    LayerBendDown As String,
+                    LayerTangent As String) As String
+    Return "FLAT PATTERN DXF?AcadVersion=" & DxfAcadVer &
+           "&OuterProfileLayer=" & LayerOuter &
+           "&BendUpLayer="       & LayerBendUp &
+           "&BendDownLayer="     & LayerBendDown &
+           "&InvisibleLayers="   & LayerTangent
+End Function
+
+' ==============================================================================
+' RESOLVE FILE PATH
+' Returns the final output path based on ExistingFileMode.
+' Returns "" if SKIP mode is active and the file exists.
+' ==============================================================================
+Function ResolveFilePath(folder As String, fileName As String,
+                         mode As String, VersionCounterFormat As String,
+                         ByRef renamed As Boolean) As String
+    Dim filePath As String = System.IO.Path.Combine(folder, fileName)
+    renamed = False
+
+    If Not System.IO.File.Exists(filePath) Then Return filePath
+
+    Select Case mode
+        Case "OVERWRITE"
+            Return filePath
+        Case "SKIP"
+            Return ""
+        Case Else
+            renamed = True
+            Dim baseName As String = System.IO.Path.GetFileNameWithoutExtension(fileName)
+            Dim ext      As String = System.IO.Path.GetExtension(fileName)
+            Dim counter  As Integer = 1
+            Dim newPath  As String
+            Do
+                newPath = System.IO.Path.Combine(
+                              folder,
+                              baseName & "_" & counter.ToString(VersionCounterFormat) & ext)
+                counter += 1
+            Loop While System.IO.File.Exists(newPath)
+            Return newPath
+    End Select
+End Function
+
+' ==============================================================================
+' SANITIZE FILENAME
+' Makes a string safe as a Windows filename component.
+'
+' Handles:
+'   - Characters not allowed by NTFS
+'   - Leading/trailing dots and spaces
+'   - Windows reserved device names (CON, PRN, NUL, COM1..COM9, LPT1..LPT9)
+'     Using these as filenames causes silent I/O failures
+'   - Names over 80 characters — reduces path-length risk on deep trees
+' ==============================================================================
+Function Sanitize(s As String) As String
+    If String.IsNullOrEmpty(s) Then Return "_"
+
+    For Each c As Char In System.IO.Path.GetInvalidFileNameChars()
+        s = s.Replace(c.ToString(), "_")
+    Next
+
+    s = s.Trim("."c, " "c)
+    If String.IsNullOrWhiteSpace(s) Then Return "_"
+
+    Select Case s.ToUpperInvariant()
+        Case "CON", "PRN", "AUX", "NUL",
+             "COM1", "COM2", "COM3", "COM4", "COM5",
+             "COM6", "COM7", "COM8", "COM9",
+             "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+             "LPT6", "LPT7", "LPT8", "LPT9"
+            Return s & "_"
+    End Select
+
+    If s.Length > 80 Then s = s.Substring(0, 80)
+
+    Return s
+End Function
+
+' ==============================================================================
+' BUILD REPORT
+' Sections ordered by priority: Exported → Errors → Warnings → details.
+' Empty sections omitted — no visual noise for clean runs.
+' ==============================================================================
+Function BuildReport(Exported      As System.Collections.Generic.List(Of String),
+                     NoFlatPattern As System.Collections.Generic.List(Of String),
+                     NotSheetMetal As System.Collections.Generic.List(Of String),
+                     Skipped       As System.Collections.Generic.List(Of String),
+                     Errors        As System.Collections.Generic.List(Of String),
+                     Warnings      As System.Collections.Generic.List(Of String),
+                     TotalParts As Integer, TotalAsm As Integer, UniqueParts As Integer,
+                     folder As String, asmName As String,
+                     FileMode As String) As String
+
+    Dim sb As New System.Text.StringBuilder
+
+    sb.AppendLine(asmName & " — " & Now.ToString("dd.MM.yyyy HH:mm:ss") & " — " & FileMode)
+    sb.AppendLine()
+    sb.AppendLine("Occurrences  parts " & TotalParts & "  asm " & TotalAsm)
+    sb.AppendLine("Unique parts " & UniqueParts)
+    sb.AppendLine("Exported     " & Exported.Count)
+    sb.AppendLine("Not SM       " & NotSheetMetal.Count)
+    sb.AppendLine("No flat pat. " & NoFlatPattern.Count)
+    sb.AppendLine("Skipped      " & Skipped.Count)
+    sb.AppendLine("Warnings     " & Warnings.Count)
+    sb.AppendLine("Errors       " & Errors.Count)
+
+    ReportSection(sb, "EXPORTED",        Exported,      "+")
+    ReportSection(sb, "ERRORS",          Errors,        "!")
+    ReportSection(sb, "WARNINGS",        Warnings,      "w")
+    ReportSection(sb, "NO FLAT PATTERN", NoFlatPattern, "-")
+    ReportSection(sb, "SKIPPED",         Skipped,       "o")
+    ReportSection(sb, "NOT SHEET METAL", NotSheetMetal, "-")
+
+    sb.AppendLine()
+    sb.AppendLine("Output: " & folder)
+    Return sb.ToString()
+End Function
+
+Sub ReportSection(sb As System.Text.StringBuilder,
+                  title As String,
+                  items As System.Collections.Generic.List(Of String),
+                  prefix As String)
+    If items.Count = 0 Then Return
+    sb.AppendLine()
+    sb.AppendLine(title & " (" & items.Count & ")")
+    For Each s In items
+        sb.AppendLine("  " & prefix & " " & s)
+    Next
+End Sub
+
+' ==============================================================================
+' SHOW REPORT
+' Selectable, scrollable, resizable WinForms dialog.
+' No System.Drawing references — uses only System.Windows.Forms properties
+' to avoid assembly resolution issues in iLogic on newer Inventor versions.
+'
+' Copy button: copies the full report to clipboard, then disables itself
+' to provide clear completion feedback.
+' ==============================================================================
+Sub ShowReport(report As String, title As String)
+    Dim frm As New System.Windows.Forms.Form()
+    frm.Text            = title
+    frm.Width           = 640
+    frm.Height          = 480
+    frm.StartPosition   = System.Windows.Forms.FormStartPosition.CenterScreen
+    frm.FormBorderStyle = System.Windows.Forms.FormBorderStyle.SizableToolWindow
+
+    Dim txt As New System.Windows.Forms.TextBox()
+    txt.Multiline  = True
+    txt.ReadOnly   = True
+    txt.ScrollBars = System.Windows.Forms.ScrollBars.Both
+    txt.WordWrap   = False
+    txt.Dock       = System.Windows.Forms.DockStyle.Fill
+    txt.Text       = report
+
+    Dim pnl As New System.Windows.Forms.Panel()
+    pnl.Dock   = System.Windows.Forms.DockStyle.Bottom
+    pnl.Height = 36
+
+    Dim btnClose As New System.Windows.Forms.Button()
+    btnClose.Text   = "Close"
+    btnClose.Width  = 90
+    btnClose.Height = 26
+    btnClose.Top    = 5
+    btnClose.Left   = 8
+    AddHandler btnClose.Click, Sub(s, e) frm.Close()
+
+    Dim btnCopy As New System.Windows.Forms.Button()
+    btnCopy.Text   = "Copy"
+    btnCopy.Width  = 90
+    btnCopy.Height = 26
+    btnCopy.Top    = 5
+    btnCopy.Left   = 106
+    AddHandler btnCopy.Click, Sub(s, e)
+        Try
+            System.Windows.Forms.Clipboard.SetText(report)
+            btnCopy.Text    = "Copied!"
+            btnCopy.Enabled = False
+        Catch
+            btnCopy.Text = "Copy failed"
+        End Try
+    End Sub
+
+    pnl.Controls.Add(btnClose)
+    pnl.Controls.Add(btnCopy)
+    frm.Controls.Add(txt)
+    frm.Controls.Add(pnl)
+
+    ' Select(0,0) — caret at start, no text selected.
+    ' Window opens cleanly. Ctrl+A / Ctrl+C work immediately.
+    AddHandler frm.Shown, Sub(s, e) txt.Select(0, 0)
+
+    frm.ShowDialog()
+End Sub
+
+' ==============================================================================
+' WRITE REPORT FILE
+' Saves the complete report to a single timestamped UTF-8 log file.
+' Returns True on success, False on failure.
+' The caller is responsible for notifying the user if False is returned.
+'
+' UTF-8 encoding: without explicit encoding, .NET uses the system code page.
+' On non-English Windows (CP1252, CP1250) special characters in part names
+' may be corrupted. UTF-8 is universally correct.
+' ==============================================================================
+Function WriteReportFile(folder As String, report As String, asmName As String) As Boolean
+    Try
+        Dim name As String = Sanitize(asmName) & "_Export_" &
+                             Now.ToString("yyyyMMdd_HHmmss") & ".log"
+        System.IO.File.WriteAllText(
+            System.IO.Path.Combine(folder, name),
+            report,
+            System.Text.Encoding.UTF8)
+        Return True
+    Catch
+        Return False
+    End Try
+End Function
