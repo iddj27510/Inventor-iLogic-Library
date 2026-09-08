@@ -1,0 +1,432 @@
+﻿' ==============================================================================
+' FLAT PATTERN DXF BATCH EXPORTER — MINIMAL  |  IL-03-min
+' ==============================================================================
+'
+' Author  : Jugoslav Ilic
+' Version : v6.7.1-min  |  08.09.2026
+' License : MIT — free to use with attribution
+' GitHub  : github.com/iddj27510/Inventor-iLogic-Library
+'
+' Same core export logic as the Full version — simplified reporting,
+' no report window, and no log file.
+' Shows a single MsgBox on completion: "Processed: N" or "Processed: N  Errors: 1"
+'
+' "Processed" counts unique parts that completed without an unexpected error —
+' including sheet metal exports, non-sheet-metal skips, Content Center skips,
+' and SKIP mode collisions. Use the Full version if you need per-part diagnostics.
+'
+' Deliberately silent on non-critical skips (not sheet metal, Content Center,
+' cannot unfold). Use the Full version if you need per-part diagnostics.
+'
+' DXF LAYER STRUCTURE
+'   IV_OUTER      — cutting contour
+'   IV_BEND_UP    — bend up direction
+'   IV_BEND_DOWN  — bend down direction
+'   IV_TANGENT    — explicitly hidden via InvisibleLayers parameter
+'
+'   Tangent edges are excluded via InvisibleLayers — not by omission, which
+'   would leave Inventor free to export them on the default layer.
+'   Layer colors and line types are configured in your CAM or nesting software
+'   by layer name — not in the DXF export itself.
+'
+' ==============================================================================
+
+Sub Main()
+
+    ' ==========================================================================
+    ' CONFIG — edit only this section
+    ' ==========================================================================
+
+    Dim OutputFolder          As String  = ""
+    Dim OutputSubfolder       As String  = "DXF_Export"
+
+    ' DXF format version.
+    ' Allowed: R12 | 2000 | 2004 | 2007 | 2010 | 2013 | 2018
+    Dim DxfAcadVer            As String  = "2018"
+
+    ' DXF layer names.
+    ' Tangent edges excluded via InvisibleLayers — not required by the target
+    ' laser/punch workflow. Layer colors and line types are set in CAM software.
+    Dim LayerOuter            As String  = "IV_OUTER"
+    Dim LayerBendUp           As String  = "IV_BEND_UP"
+    Dim LayerBendDown         As String  = "IV_BEND_DOWN"
+    Dim LayerTangent          As String  = "IV_TANGENT"   ' Referenced only to mark as invisible
+
+    Dim IncludeThickness      As Boolean = True
+    Dim IncludeRevision       As Boolean = True
+    Dim ThicknessDecimals     As String  = "F3"
+    Dim PropsetDesign         As String  = "Design Tracking Properties"
+    Dim PropPartNumber        As String  = "Part Number"
+    Dim PropRevision          As String  = "Revision Number"
+    Dim RevisionMissing       As String  = "REV-NA"
+    Dim ExistingFileMode      As String  = "VERSION"    ' OVERWRITE | SKIP | VERSION
+    Dim VersionCounterFormat  As String  = "D3"
+    Dim KeepCreatedFlat       As Boolean = False
+    Dim ExportContentCenter   As Boolean = False
+
+    ' ==========================================================================
+    ' VALIDATION — catches configuration errors before the batch starts
+    ' ==========================================================================
+
+    ' Validate ExistingFileMode — a typo here causes silent failures later.
+    Dim fileMode As String = ExistingFileMode.Trim().ToUpperInvariant()
+    If fileMode <> "OVERWRITE" AndAlso fileMode <> "SKIP" AndAlso fileMode <> "VERSION" Then
+        MsgBox("ExistingFileMode must be OVERWRITE, SKIP or VERSION." & vbCrLf &
+               "Current value: """ & ExistingFileMode & """",
+               vbCritical, "Invalid Configuration")
+        Return
+    End If
+
+    ' Validate DxfAcadVer — Inventor accepts only specific version strings.
+    ' An unsupported value causes a silent export failure with no error message.
+    Dim validVersions As String = "|R12|2000|2004|2007|2010|2013|2018|"
+    If Not validVersions.Contains("|" & DxfAcadVer.Trim() & "|") Then
+        MsgBox("DxfAcadVer must be R12, 2000, 2004, 2007, 2010, 2013 or 2018." & vbCrLf &
+               "Current value: """ & DxfAcadVer & """",
+               vbCritical, "Invalid Configuration")
+        Return
+    End If
+
+    ' Must run from an Assembly document.
+    If Not TypeOf ThisApplication.ActiveDocument Is AssemblyDocument Then
+        MsgBox("Active document must be an Assembly.", vbExclamation, "Wrong Document Type")
+        Return
+    End If
+
+    Dim asm As AssemblyDocument = ThisApplication.ActiveDocument
+
+    If String.IsNullOrWhiteSpace(asm.FullFileName) Then
+        MsgBox("Assembly must be saved before export.", vbExclamation, "Unsaved Document")
+        Return
+    End If
+
+    ' ==========================================================================
+    ' STATE
+    ' ==========================================================================
+
+    Dim Processed   As New System.Collections.Generic.HashSet(Of String)
+    Dim Quantities  As New System.Collections.Generic.Dictionary(Of String, Integer)
+    Dim OutputIndex As New System.Collections.Generic.Dictionary(Of String, String)
+
+    ' ProcessedCount = parts that completed without unexpected error (exported or skipped).
+    ' Errors        = parts that threw an unexpected exception.
+    Dim ProcessedCount As Integer = 0
+    Dim Errors         As Integer = 0
+
+    Dim prevScreenUpdating As Boolean = ThisApplication.ScreenUpdating
+    ThisApplication.ScreenUpdating = False
+
+    Try
+        Dim folder As String
+        If String.IsNullOrWhiteSpace(OutputFolder) Then
+            folder = System.IO.Path.Combine(
+                         System.IO.Path.GetDirectoryName(asm.FullFileName), OutputSubfolder)
+        Else
+            folder = OutputFolder.Trim()
+        End If
+        System.IO.Directory.CreateDirectory(folder)
+
+        Dim rootPath As New System.Collections.Generic.HashSet(Of String)
+        rootPath.Add(asm.FullFileName.ToUpperInvariant())
+
+        ' Phase 1 — collect
+        Dim parts As System.Collections.Generic.List(Of PartDocument) =
+            CollectParts(asm.ComponentDefinition.Occurrences, rootPath, Processed, Quantities)
+
+        ' Phase 2 — export
+        For i As Integer = 0 To parts.Count - 1
+            Dim pct As Integer = CInt((i + 1) / System.Math.Max(parts.Count, 1) * 100)
+            ThisApplication.StatusBarText =
+                "DXF Export [" & pct & "%]  " & (i + 1) & " / " & parts.Count &
+                "  " & parts(i).DisplayName
+
+            Dim ok As Boolean = ExportPart(
+                parts(i), folder, Quantities, OutputIndex,
+                DxfAcadVer, LayerOuter, LayerBendUp, LayerBendDown, LayerTangent,
+                IncludeThickness, IncludeRevision, ThicknessDecimals,
+                KeepCreatedFlat, fileMode, VersionCounterFormat,
+                ExportContentCenter,
+                PropsetDesign, PropPartNumber, PropRevision, RevisionMissing)
+
+            If ok Then ProcessedCount += 1 Else Errors += 1
+        Next
+
+        ThisApplication.StatusBarText = "DXF Export complete"
+
+        ' "Processed" reflects parts handled without unexpected error.
+        ' This includes actual DXF exports as well as intentional skips.
+        ' For a breakdown by category, use the Full version.
+        Dim summary As String = "Processed: " & ProcessedCount
+        If Errors > 0 Then summary &= "   Errors: " & Errors
+        MsgBox(summary, vbInformation, "Done")
+
+    Finally
+        ThisApplication.ScreenUpdating = prevScreenUpdating
+    End Try
+
+End Sub
+
+' ==============================================================================
+' COLLECT PARTS — Phase 1
+'
+' CIRCULAR REFERENCE GUARD — branch-local asmPath:
+'   MAIN → SUB-A (BRACKET x1) + SUB-A (BRACKET x1) = BRACKET x2  (correct)
+'   A global "visited" set would block the second SUB-A → BRACKET x1  (wrong)
+' ==============================================================================
+Function CollectParts(occs As ComponentOccurrences,
+                      asmPath    As System.Collections.Generic.HashSet(Of String),
+                      Processed  As System.Collections.Generic.HashSet(Of String),
+                      Quantities As System.Collections.Generic.Dictionary(Of String, Integer)) _
+                      As System.Collections.Generic.List(Of PartDocument)
+
+    Dim parts As New System.Collections.Generic.List(Of PartDocument)
+
+    For Each occ As ComponentOccurrence In occs
+        Try
+            If occ.Suppressed OrElse Not occ.Enabled Then Continue For
+
+            Select Case occ.DefinitionDocumentType
+
+                Case DocumentTypeEnum.kAssemblyDocumentObject
+                    Dim subAsm As AssemblyDocument =
+                        CType(occ.Definition.Document, AssemblyDocument)
+                    If String.IsNullOrWhiteSpace(subAsm.FullFileName) Then Continue For
+                    If subAsm.ComponentDefinition Is Nothing Then Continue For
+                    Dim asmKey As String = subAsm.FullFileName.ToUpperInvariant()
+                    If asmPath.Contains(asmKey) Then Continue For
+                    Dim branchPath As New System.Collections.Generic.HashSet(Of String)(asmPath)
+                    branchPath.Add(asmKey)
+                    parts.AddRange(CollectParts(subAsm.ComponentDefinition.Occurrences,
+                                               branchPath, Processed, Quantities))
+
+                Case DocumentTypeEnum.kPartDocumentObject
+                    Dim part As PartDocument = CType(occ.Definition.Document, PartDocument)
+                    If String.IsNullOrWhiteSpace(part.FullFileName) Then Continue For
+                    Dim key As String = part.FullFileName.ToUpperInvariant()
+                    If Quantities.ContainsKey(key) Then
+                        Quantities(key) += 1
+                    Else
+                        Quantities(key) = 1
+                    End If
+                    ' HashSet.Add() returns False if already present — export once only.
+                    If Processed.Add(key) Then parts.Add(part)
+
+            End Select
+        Catch
+        End Try
+    Next
+
+    Return parts
+End Function
+
+' ==============================================================================
+' EXPORT PART — Phase 2
+'
+' Returns True  = completed without unexpected error (exported or intentionally
+'                 skipped: not SM, Content Center, cannot unfold, SKIP mode).
+' Returns False = unexpected exception — counted in the Errors total.
+'
+' The Finally block guarantees flat pattern cleanup always runs,
+' leaving every model in its original state.
+' ==============================================================================
+Function ExportPart(part As PartDocument,
+                    folder As String,
+                    Quantities  As System.Collections.Generic.Dictionary(Of String, Integer),
+                    OutputIndex As System.Collections.Generic.Dictionary(Of String, String),
+                    DxfAcadVer As String,
+                    LayerOuter As String, LayerBendUp As String,
+                    LayerBendDown As String, LayerTangent As String,
+                    IncludeThickness As Boolean, IncludeRevision As Boolean,
+                    ThicknessDecimals As String, KeepCreatedFlat As Boolean,
+                    FileMode As String, VersionCounterFormat As String,
+                    ExportContentCenter As Boolean,
+                    PropsetDesign As String, PropPartNumber As String,
+                    PropRevision As String, RevisionMissing As String) As Boolean
+
+    Dim smDef   As SheetMetalComponentDefinition = Nothing
+    Dim created As Boolean = False
+
+    Try
+        ' Content Center check
+        If Not ExportContentCenter Then
+            Try
+                Dim sm As SheetMetalComponentDefinition =
+                    TryCast(part.ComponentDefinition, SheetMetalComponentDefinition)
+                If sm IsNot Nothing AndAlso sm.IsContentMember Then Return True
+                Dim cp As PartComponentDefinition =
+                    TryCast(part.ComponentDefinition, PartComponentDefinition)
+                If cp IsNot Nothing AndAlso cp.IsContentMember Then Return True
+            Catch
+            End Try
+        End If
+
+        ' Sheet metal check
+        smDef = TryCast(part.ComponentDefinition, SheetMetalComponentDefinition)
+        If smDef Is Nothing Then Return True  ' Not sheet metal — skip silently
+
+        ' Flat pattern
+        If Not smDef.HasFlatPattern Then
+            Try
+                smDef.Unfold()
+                created = True
+            Catch
+                Return True  ' Cannot unfold — skip silently
+            End Try
+        End If
+
+        ' Build filename
+        Dim num As String = ReadProp(part, PropsetDesign, PropPartNumber)
+        Dim rev As String = ReadProp(part, PropsetDesign, PropRevision)
+        If String.IsNullOrWhiteSpace(num) Then
+            num = System.IO.Path.GetFileNameWithoutExtension(part.FullFileName)
+        End If
+
+        Dim name As String = Sanitize(num) & "_FP"
+
+        If IncludeThickness Then
+            Try
+                Dim cm As Double = smDef.Thickness.Value
+                Dim uom As UnitsOfMeasure = part.UnitsOfMeasure
+                Dim dv As Double
+                Dim su As String = ""
+                Select Case uom.LengthUnits
+                    Case UnitsTypeEnum.kMillimeterLengthUnits
+                        dv = uom.ConvertUnits(cm, UnitsTypeEnum.kCentimeterLengthUnits,
+                                              UnitsTypeEnum.kMillimeterLengthUnits)
+                    Case UnitsTypeEnum.kInchLengthUnits
+                        dv = uom.ConvertUnits(cm, UnitsTypeEnum.kCentimeterLengthUnits,
+                                              UnitsTypeEnum.kInchLengthUnits)
+                        su = "in"
+                    Case UnitsTypeEnum.kCentimeterLengthUnits
+                        dv = cm : su = "cm"
+                    Case UnitsTypeEnum.kMeterLengthUnits
+                        dv = uom.ConvertUnits(cm, UnitsTypeEnum.kCentimeterLengthUnits,
+                                              UnitsTypeEnum.kMeterLengthUnits)
+                        su = "m"
+                    Case UnitsTypeEnum.kFootLengthUnits
+                        dv = uom.ConvertUnits(cm, UnitsTypeEnum.kCentimeterLengthUnits,
+                                              UnitsTypeEnum.kFootLengthUnits)
+                        su = "ft"
+                    Case Else
+                        dv = cm * 10 : su = "mm"
+                End Select
+                Dim t As String = dv.ToString(ThicknessDecimals,
+                                              System.Globalization.CultureInfo.InvariantCulture)
+                t = t.TrimEnd("0"c).TrimEnd("."c)
+                name &= "_t" & t & su
+            Catch
+            End Try
+        End If
+
+        If IncludeRevision Then
+            name &= If(String.IsNullOrWhiteSpace(rev),
+                       "_" & RevisionMissing,
+                       "_R" & Sanitize(rev))
+        End If
+
+        Dim fileName  As String = name & ".dxf"
+        Dim sourceKey As String = part.FullFileName.ToUpperInvariant()
+        Dim baseKey   As String = fileName.ToUpperInvariant()
+
+        ' Cross-part collision — force VERSION if same filename, different source
+        Dim effectiveMode As String = FileMode
+        If OutputIndex.ContainsKey(baseKey) AndAlso OutputIndex(baseKey) <> sourceKey Then
+            effectiveMode = "VERSION"
+        End If
+
+        ' Resolve file path
+        Dim filePath As String = System.IO.Path.Combine(folder, fileName)
+        If System.IO.File.Exists(filePath) Then
+            Select Case effectiveMode
+                Case "OVERWRITE"
+                    ' use existing path
+                Case "SKIP"
+                    Return True
+                Case Else
+                    Dim b As String = System.IO.Path.GetFileNameWithoutExtension(fileName)
+                    Dim e As String = System.IO.Path.GetExtension(fileName)
+                    Dim n As Integer = 1
+                    Do
+                        filePath = System.IO.Path.Combine(folder,
+                                       b & "_" & n.ToString(VersionCounterFormat) & e)
+                        n += 1
+                    Loop While System.IO.File.Exists(filePath)
+            End Select
+        End If
+
+        ' Write DXF — InvisibleLayers explicitly hides tangent geometry
+        smDef.DataIO.WriteDataToFile(
+            "FLAT PATTERN DXF?AcadVersion=" & DxfAcadVer &
+            "&OuterProfileLayer=" & LayerOuter &
+            "&BendUpLayer="       & LayerBendUp &
+            "&BendDownLayer="     & LayerBendDown &
+            "&InvisibleLayers="   & LayerTangent,
+            filePath)
+
+        ' Register only after confirmed write — no phantom reservations.
+        ' Both base and actual name indexed — covers version-renamed cases.
+        If Not OutputIndex.ContainsKey(baseKey) Then OutputIndex(baseKey) = sourceKey
+        Dim outKey As String = System.IO.Path.GetFileName(filePath).ToUpperInvariant()
+        If Not OutputIndex.ContainsKey(outKey) Then OutputIndex(outKey) = sourceKey
+
+        Return True
+
+    Catch
+        Return False
+
+    Finally
+        ' Always runs — only acts on flat patterns that WE created.
+        '   KeepCreatedFlat = False → Delete (model unchanged)
+        '   KeepCreatedFlat = True  → Exit edit mode (flat pattern stays)
+        If created AndAlso smDef IsNot Nothing AndAlso smDef.HasFlatPattern Then
+            If KeepCreatedFlat Then
+                Try : smDef.FlatPattern.ExitEdit() : Catch : End Try
+            Else
+                Try : smDef.FlatPattern.Delete() : Catch : End Try
+            End If
+        End If
+    End Try
+
+End Function
+
+' ==============================================================================
+' READ IPROPERTY
+' Returns Nothing if the property is missing, unreadable, or empty.
+' ==============================================================================
+Function ReadProp(part As PartDocument, propSet As String, propName As String) As String
+    Try
+        Dim v As String = part.PropertySets.Item(propSet).Item(propName).Value.ToString().Trim()
+        Return If(String.IsNullOrWhiteSpace(v), Nothing, v)
+    Catch
+        Return Nothing
+    End Try
+End Function
+
+' ==============================================================================
+' SANITIZE FILENAME
+' Makes a string safe as a Windows filename component.
+'
+' Handles:
+'   - Characters not allowed by NTFS
+'   - Leading/trailing dots and spaces
+'   - Windows reserved device names (CON, PRN, NUL, COM1..COM9, LPT1..LPT9)
+'   - Names over 80 characters — reduces path-length risk on deep trees
+' ==============================================================================
+Function Sanitize(s As String) As String
+    If String.IsNullOrEmpty(s) Then Return "_"
+    For Each c As Char In System.IO.Path.GetInvalidFileNameChars()
+        s = s.Replace(c.ToString(), "_")
+    Next
+    s = s.Trim("."c, " "c)
+    If String.IsNullOrWhiteSpace(s) Then Return "_"
+    Select Case s.ToUpperInvariant()
+        Case "CON", "PRN", "AUX", "NUL",
+             "COM1", "COM2", "COM3", "COM4", "COM5",
+             "COM6", "COM7", "COM8", "COM9",
+             "LPT1", "LPT2", "LPT3", "LPT4", "LPT5",
+             "LPT6", "LPT7", "LPT8", "LPT9"
+            Return s & "_"
+    End Select
+    If s.Length > 80 Then s = s.Substring(0, 80)
+    Return s
+End Function
