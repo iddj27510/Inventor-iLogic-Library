@@ -1,45 +1,51 @@
-﻿# Inventor iLogic Library
+# Inventor iLogic Library
 
-Production-grade iLogic automation tools for Autodesk Inventor.
-Open source. MIT license.
+Production-grade iLogic rules for Autodesk Inventor.
+
+Built for reliability and readability: every rule is self-contained,
+documented with a standard header, uses Check-Before-Set for all write
+operations, and handles edge cases (empty assemblies, missing
+iProperties, locked files) without crashing the batch.
 
 ---
 
-## IL-03 — Flat Pattern DXF Batch Exporter
+## Available Rules
 
-Batch exports flat pattern DXF files from any Inventor Assembly.
-Tested on Autodesk Inventor 2027.
+### IL-03 — Flat Pattern DXF Batch Exporter
 
-**Two versions:**
-- `IL-03_FlatPatternDXFBatchExporter.iLogicVb` — Full version with report window and log file
-- `IL-03_FlatPatternDXFBatchExporter - Minimal.iLogicVb` — Minimal version, single MsgBox on completion
+Recursively scans an assembly for sheet metal parts and exports each
+flat pattern as a DXF file named after the part number and revision.
 
-**What it does:**
-- Recursively scans the entire assembly tree
-- Finds every sheet metal part
-- Creates flat patterns where missing
-- Exports DXF with Part Number + thickness + revision in the filename
-- Skips Content Center, non-sheet-metal, and suppressed parts
-- Handles duplicate parts, filename collisions, unsaved files, circular references
-- Leaves every model exactly as it found it
+- Skips non-sheet-metal parts with a log entry
+- Creates flat pattern if missing
+- One file error does not stop the batch
+- ShowReport summary at the end
 
-**DXF layer structure:**
+**Compatibility:** Inventor 2018 – 2027
 
-| Layer | Purpose |
-|---|---|
-| IV_OUTER | Cutting contour |
-| IV_BEND_UP | Bend up direction |
-| IV_BEND_DOWN | Bend down direction |
-| IV_TANGENT | Excluded via InvisibleLayers |
+Files:
+- `IL-03_FlatPatternDXFBatchExporter.iLogicVb` — full rule
+- `IL-03_FlatPatternDXFBatchExporter - Minimal.iLogicVb` — minimal variant
 
-**Test result:**
-125-part assembly — 2 sheet metal DXFs exported — 0 errors
+---
 
-**How to use:**
-1. Open an Assembly (.iam) in Autodesk Inventor
-2. iLogic panel → Add/Edit Rule → paste the code
-3. Edit the CONFIG section if needed
-4. Run
+## Roadmap
+
+The library is expanding. Planned rules cover: iProperties validation,
+drawing title block auto-population, BOM completeness checking,
+revision auto-incrementing, and ERP data export.
+
+Status and planned dates are tracked in the Batch PDF Publisher
+project's internal roadmap. Public announcements will be made as
+each rule is released.
+
+---
+
+## Related Projects
+
+- [Batch PDF Publisher](https://github.com/iddj27510/BatchPDFPublisher) —
+  VBA add-in for bulk IDW to PDF export. 52 components, 49 unit tests,
+  CycloneDX SBOM, GitHub Actions CI, MIT licensed.
 
 ---
 
@@ -49,6 +55,6 @@ MIT — free to use with attribution.
 
 ## Author
 
-Jugoslav Ilic
-[LinkedIn](https://www.linkedin.com/in/jugoslav-ilic)
-[GitHub](https://github.com/iddj27510)
+**Jugoslav Ilić**
+Email: engilic@gmail.com
+GitHub: [@iddj27510](https://github.com/iddj27510)
